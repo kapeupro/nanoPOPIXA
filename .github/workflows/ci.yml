@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-import:
+    name: Lint + import check (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies (CPU torch)
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy tiktoken
+
+      - name: Install package
+        run: pip install -e . --no-deps
+
+      - name: Check imports
+        run: |
+          python -c "from model import nanoPOPIXA, POPIXAConfig; print('model OK')"
+          python -c "from data_prep import prepare, collect_code; print('data_prep OK')"
+          python -c "from popixa_cli import _build_parser; _build_parser(); print('CLI OK')"
+
+      - name: Smoke test — model forward pass
+        run: |
+          python - << 'PYEOF'
+          import torch
+          from model import nanoPOPIXA, POPIXAConfig
+          cfg   = POPIXAConfig(block_size=32, vocab_size=65, n_layer=2, n_head=2, n_embd=64)
+          model = nanoPOPIXA(cfg)
+          idx   = torch.zeros((1, 8), dtype=torch.long)
+          logits, loss = model(idx, idx)
+          assert logits.shape == (1, 8, 65), f"shape inattendue: {logits.shape}"
+          print(f"forward OK — logits {logits.shape} | loss {loss:.4f}")
+          PYEOF
+
+      - name: Smoke test — generation
+        run: |
+          python - << 'PYEOF'
+          import torch
+          from model import nanoPOPIXA, POPIXAConfig
+          cfg   = POPIXAConfig(block_size=32, vocab_size=65, n_layer=2, n_head=2, n_embd=64)
+          model = nanoPOPIXA(cfg)
+          model.train(False)
+          idx = torch.zeros((1, 1), dtype=torch.long)
+          out = model.generate(idx, max_new_tokens=10, temperature=1.0, top_k=5)
+          assert out.shape == (1, 11), f"shape inattendue: {out.shape}"
+          tokens = list(model.generate_stream(idx, max_new_tokens=5))
+          assert len(tokens) == 5
+          print(f"generation OK — {out.shape} | stream {len(tokens)} tokens")
+          PYEOF

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Données et checkpoints (trop lourds pour git)
+data/
+out-nanopopixa/
+*.bin
+*.pt
+
+# Logs et sorties
+train.log
+*.txt
+!README.md
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Divers
+docs/

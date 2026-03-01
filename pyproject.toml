@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "nanopopixa"
+version = "1.0.0"
+description = "nanoPOPIXA — Un LLM minimaliste from scratch"
+authors = [{ name = "Dimitri" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy",
+    "tiktoken",
+]
+
+[project.scripts]
+popixa = "popixa_cli:main"
+
+[tool.setuptools]
+py-modules = [
+    "model",
+    "train",
+    "chat",
+    "data_prep",
+    "scrape",
+    "popixa_cli",
+    "splash",
+    "monitor",
+]
