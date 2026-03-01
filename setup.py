@@ -8,7 +8,6 @@ setup(
     py_modules=[
         "model",
         "train",
-        "generate",
         "chat",
         "data_prep",
         "scrape",

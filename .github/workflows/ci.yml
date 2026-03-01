@@ -26,7 +26,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy tiktoken
+          pip install numpy tiktoken requests beautifulsoup4
 
       - name: Install package
         run: pip install -e . --no-deps
@@ -39,20 +39,20 @@ jobs:
 
       - name: Smoke test — model forward pass
         run: |
-          python - << 'PYEOF'
+          python -c "
           import torch
           from model import nanoPOPIXA, POPIXAConfig
           cfg   = POPIXAConfig(block_size=32, vocab_size=65, n_layer=2, n_head=2, n_embd=64)
           model = nanoPOPIXA(cfg)
           idx   = torch.zeros((1, 8), dtype=torch.long)
           logits, loss = model(idx, idx)
-          assert logits.shape == (1, 8, 65), f"shape inattendue: {logits.shape}"
-          print(f"forward OK — logits {logits.shape} | loss {loss:.4f}")
-          PYEOF
+          assert logits.shape == (1, 8, 65)
+          print('forward OK — logits', logits.shape, '| loss', round(loss.item(), 4))
+          "
 
       - name: Smoke test — generation
         run: |
-          python - << 'PYEOF'
+          python -c "
           import torch
           from model import nanoPOPIXA, POPIXAConfig
           cfg   = POPIXAConfig(block_size=32, vocab_size=65, n_layer=2, n_head=2, n_embd=64)
@@ -60,8 +60,8 @@ jobs:
           model.train(False)
           idx = torch.zeros((1, 1), dtype=torch.long)
           out = model.generate(idx, max_new_tokens=10, temperature=1.0, top_k=5)
-          assert out.shape == (1, 11), f"shape inattendue: {out.shape}"
+          assert out.shape == (1, 11)
           tokens = list(model.generate_stream(idx, max_new_tokens=5))
           assert len(tokens) == 5
-          print(f"generation OK — {out.shape} | stream {len(tokens)} tokens")
-          PYEOF
+          print('generation OK —', out.shape, '| stream', len(tokens), 'tokens')
+          "
