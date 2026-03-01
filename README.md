@@ -180,4 +180,3 @@ nanopopixa/
 ## Licence
 
 MIT -- voir [LICENSE](LICENSE)
-# nanoPOPIXA
