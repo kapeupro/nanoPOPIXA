@@ -72,7 +72,7 @@ def load_model(checkpoint_path: str, device: str):
 # ─── Génération streaming ────────────────────────────────────────────────────
 def stream(model, encode, decode, context_str: str,
            max_tokens: int, temperature: float, top_k: int,
-           repetition_penalty: float, device: str) -> str:
+           repetition_penalty: float, device: str, top_p=None) -> str:
     """Envoie le contexte au modèle et affiche les tokens en temps réel."""
     ctx = torch.tensor(encode(context_str), dtype=torch.long, device=device).unsqueeze(0)
 
@@ -81,7 +81,7 @@ def stream(model, encode, decode, context_str: str,
 
     tokens = []
     try:
-        for tok in model.generate_stream(ctx, max_tokens, temperature, top_k, repetition_penalty):
+        for tok in model.generate_stream(ctx, max_tokens, temperature, top_k, repetition_penalty, top_p):
             ch = decode([tok])
             tokens.append(ch)
             sys.stdout.write(ch)
@@ -116,7 +116,7 @@ def save_conversation(turns: list, filename: str) -> None:
 
 # ─── Boucle principale ───────────────────────────────────────────────────────
 def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: int,
-             repetition_penalty: float = 1.0):
+             repetition_penalty: float = 1.0, top_p: float = None):
     # Détection Mac MPS
     if torch.cuda.is_available():
         device = "cuda"
@@ -137,9 +137,10 @@ def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: i
     print(INFO_C + f"  nanoPOPIXA  ·  {n_params:.2f}M params  ·  iter {iter_num}  ·  {device}" + R)
     print(SEP)
     print(INFO_C + "  Commandes :" + R)
-    print(CMD_C  + "    /temp 0.5" + INFO_C + "   → changer la température (défaut 0.8)" + R)
-    print(CMD_C  + "    /penalty 1.2" + INFO_C + "→ pénalité de répétition (défaut 1.0)" + R)
-    print(CMD_C  + "    /tokens 300" + INFO_C + " → nb de tokens générés   (défaut 200)" + R)
+    print(CMD_C  + "    /temp 0.5" + INFO_C + "    → changer la température   (défaut 0.8)" + R)
+    print(CMD_C  + "    /top_p 0.9" + INFO_C + "   → nucleus sampling          (défaut off)" + R)
+    print(CMD_C  + "    /penalty 1.2" + INFO_C + "  → pénalité de répétition  (défaut 1.0)" + R)
+    print(CMD_C  + "    /tokens 300" + INFO_C + "   → nb de tokens générés    (défaut 200)" + R)
     print(CMD_C  + "    /reset" + INFO_C + "     → remettre le contexte à zéro" + R)
     print(CMD_C  + "    /libre" + INFO_C + "     → génération sans prompt" + R)
     print(CMD_C  + "    /save [fichier]" + INFO_C + " → sauvegarder la conversation (.txt)" + R)
@@ -174,6 +175,15 @@ def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: i
                 print(ERR_C + "  usage : /temp 0.8" + R)
             continue
 
+        if prompt.startswith("/top_p "):
+            try:
+                val = prompt.split()[1]
+                top_p = None if val in ("off", "0") else float(val)
+                print(CMD_C + f"  → top_p : {top_p}" + R)
+            except (IndexError, ValueError):
+                print(ERR_C + "  usage : /top_p 0.9  ou  /top_p off" + R)
+            continue
+
         if prompt.startswith("/penalty "):
             try:
                 repetition_penalty = float(prompt.split()[1])
@@ -198,7 +208,7 @@ def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: i
         if prompt == "/libre":
             history = ""
             stream(model, encode, decode, "", max_tokens, temperature, top_k,
-                   repetition_penalty, device)
+                   repetition_penalty, device, top_p)
             continue
 
         if prompt.startswith("/save"):
@@ -219,7 +229,7 @@ def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: i
         context_str = history + prompt
         response    = stream(model, encode, decode, context_str,
                              max_tokens, temperature, top_k,
-                             repetition_penalty, device)
+                             repetition_penalty, device, top_p)
 
         # Mettre à jour l'historique (contexte glissant)
         history = context_str + response

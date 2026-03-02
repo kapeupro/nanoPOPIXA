@@ -66,7 +66,7 @@ class CausalSelfAttention(nn.Module):
                 ),
             )
 
-    def forward(self, x):
+    def forward(self, x, past_kv=None):
         B, T, C = x.size()  # batch, séquence, embedding
 
         # calcul Q, K, V pour toutes les têtes
@@ -75,24 +75,33 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
+        # KV-cache — concaténer les clés/valeurs des tokens précédents
+        if past_kv is not None:
+            pk, pv = past_kv
+            k = torch.cat([pk, k], dim=2)
+            v = torch.cat([pv, v], dim=2)
+
+        present_kv = (k, v)  # sauvegardé pour le prochain token
+        T_q = q.size(2)
+
         if self.flash:
-            # Flash Attention — noyau CUDA fusionné, masque causal intégré
+            # Masque causal sur le premier pass seulement ; avec cache T_q=1 → pas de masque
             y = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=None,
                 dropout_p=self.dropout if self.training else 0.0,
-                is_causal=True,
+                is_causal=(past_kv is None),
             )
         else:
-            # Attention manuelle avec masque causal (fallback PyTorch < 2.0)
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
+            if past_kv is None:
+                att = att.masked_fill(self.bias[:, :, :T_q, :k.size(2)] == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v
 
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
-        return self.resid_dropout(self.c_proj(y))
+        y = y.transpose(1, 2).contiguous().view(B, T_q, C)
+        return self.resid_dropout(self.c_proj(y)), present_kv
 
 
 class MLP(nn.Module):
@@ -123,10 +132,11 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))   # attention + résiduel
-        x = x + self.mlp(self.ln_2(x))    # MLP + résiduel
-        return x
+    def forward(self, x, past_kv=None):
+        attn_out, present_kv = self.attn(self.ln_1(x), past_kv)
+        x = x + attn_out
+        x = x + self.mlp(self.ln_2(x))
+        return x, present_kv
 
 
 class nanoPOPIXA(nn.Module):
@@ -176,12 +186,14 @@ class nanoPOPIXA(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, past_kv=None):
         device = idx.device
         B, T = idx.size()
         assert T <= self.config.block_size, f"Séquence trop longue ({T} > {self.config.block_size})"
 
-        pos = torch.arange(0, T, dtype=torch.long, device=device)
+        # Décaler les positions quand on utilise le KV-cache
+        past_len = past_kv[0][0].size(2) if past_kv is not None else 0
+        pos = torch.arange(past_len, past_len + T, dtype=torch.long, device=device)
 
         # embeddings tokens + positions
         tok_emb = self.transformer.wte(idx)
@@ -189,8 +201,11 @@ class nanoPOPIXA(nn.Module):
         x = self.transformer.drop(tok_emb + pos_emb)
 
         # passage dans les N blocs Transformer
-        for block in self.transformer.h:
-            x = block(x)
+        present_kvs = []
+        for i, block in enumerate(self.transformer.h):
+            layer_past = past_kv[i] if past_kv is not None else None
+            x, present_kv = block(x, layer_past)
+            present_kvs.append(present_kv)
 
         x = self.transformer.ln_f(x)
 
@@ -203,10 +218,10 @@ class nanoPOPIXA(nn.Module):
             logits = self.lm_head(x[:, [-1], :])
             loss = None
 
-        return logits, loss
+        return logits, loss, present_kvs
 
-    def _apply_sampling(self, logits, temperature, top_k, repetition_penalty, idx):
-        """Applique temperature, repetition penalty et top-k sur les logits."""
+    def _apply_sampling(self, logits, temperature, top_k, repetition_penalty, idx, top_p=None):
+        """Applique temperature, repetition penalty, top-k et top-p sur les logits."""
         logits = logits[:, -1, :] / temperature
 
         # Repetition penalty — pénalise les tokens déjà générés
@@ -217,32 +232,59 @@ class nanoPOPIXA(nn.Module):
                 else:
                     logits[0, token_id] *= repetition_penalty
 
+        # Top-k — ne garde que les k tokens les plus probables
         if top_k is not None:
             v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
             logits[logits < v[:, [-1]]] = -float("Inf")
+
+        # Top-p (nucleus) — ne garde que les tokens dont la proba cumulée ≤ p
+        if top_p is not None and top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+            sorted_probs  = F.softmax(sorted_logits, dim=-1)
+            cumprobs      = torch.cumsum(sorted_probs, dim=-1)
+            # retire les tokens au-delà du noyau (décalé d'un cran pour garder le 1er au-dessus)
+            to_remove = cumprobs - sorted_probs > top_p
+            sorted_logits[to_remove] = -float("Inf")
+            logits = torch.zeros_like(logits).scatter_(-1, sorted_indices, sorted_logits)
 
         return F.softmax(logits, dim=-1)
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None,
-                 repetition_penalty=1.0):
-        """Génération classique (tout d'un coup)."""
+                 repetition_penalty=1.0, top_p=None):
+        """Génération classique avec KV-cache (10-50x plus rapide)."""
+        past_kv = None
         for _ in range(max_new_tokens):
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-            logits, _ = self(idx_cond)
-            probs     = self._apply_sampling(logits, temperature, top_k, repetition_penalty, idx)
-            idx_next  = torch.multinomial(probs, num_samples=1)
-            idx       = torch.cat((idx, idx_next), dim=1)
+            cache_len = past_kv[0][0].size(2) if past_kv is not None else 0
+
+            if past_kv is not None and cache_len < self.config.block_size:
+                # Pass rapide — seulement le nouveau token
+                logits, _, past_kv = self(idx[:, -1:], past_kv=past_kv)
+            else:
+                # Premier pass ou dépassement block_size — fenêtre glissante
+                idx_cond = idx[:, -self.config.block_size:] if idx.size(1) > self.config.block_size else idx
+                logits, _, past_kv = self(idx_cond)
+
+            probs    = self._apply_sampling(logits, temperature, top_k, repetition_penalty, idx, top_p)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx      = torch.cat((idx, idx_next), dim=1)
         return idx
 
     @torch.no_grad()
     def generate_stream(self, idx, max_new_tokens, temperature=1.0, top_k=None,
-                        repetition_penalty=1.0):
-        """Génération en streaming — yield chaque nouveau token."""
+                        repetition_penalty=1.0, top_p=None):
+        """Génération en streaming avec KV-cache — yield chaque nouveau token."""
+        past_kv = None
         for _ in range(max_new_tokens):
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-            logits, _ = self(idx_cond)
-            probs     = self._apply_sampling(logits, temperature, top_k, repetition_penalty, idx)
-            idx_next  = torch.multinomial(probs, num_samples=1)
-            idx       = torch.cat((idx, idx_next), dim=1)
+            cache_len = past_kv[0][0].size(2) if past_kv is not None else 0
+
+            if past_kv is not None and cache_len < self.config.block_size:
+                logits, _, past_kv = self(idx[:, -1:], past_kv=past_kv)
+            else:
+                idx_cond = idx[:, -self.config.block_size:] if idx.size(1) > self.config.block_size else idx
+                logits, _, past_kv = self(idx_cond)
+
+            probs    = self._apply_sampling(logits, temperature, top_k, repetition_penalty, idx, top_p)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx      = torch.cat((idx, idx_next), dim=1)
             yield idx_next[0, 0].item()

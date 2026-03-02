@@ -34,6 +34,7 @@ parser.add_argument("--input",    default="input.txt", help="Fichier texte brut 
 parser.add_argument("--resume",   action="store_true", help="Reprendre depuis le dernier checkpoint")
 parser.add_argument("--size",     default="medium",    choices=["nano","small","medium"],
                     help="Taille du modèle : nano (~2M), small (~10M), medium (~85M)")
+parser.add_argument("--amp",      action="store_true", help="Mixed precision bfloat16 (CUDA uniquement)")
 args = parser.parse_args()
 
 
@@ -74,6 +75,13 @@ else:
     device = "cpu"
 
 print(f"🚀 Device détecté : {device.upper()}")
+
+# Mixed precision — bfloat16 sur CUDA uniquement (stable sans GradScaler)
+use_amp      = args.amp and device == "cuda"
+amp_dtype    = torch.bfloat16
+amp_dev_type = "cuda"
+if use_amp:
+    print("⚡ Mixed precision bfloat16 activé")
 
 
 # ─────────────────────────────────────────
@@ -163,7 +171,8 @@ def estimate_loss(model):
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(split)
-            _, loss = model(X, Y)
+            with torch.autocast(device_type=amp_dev_type, dtype=amp_dtype, enabled=use_amp):
+                _, loss, _ = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train(True)
@@ -257,9 +266,10 @@ for iter in range(iter_start, max_iters):
     # ── Forward + backward avec gradient accumulation ─────────────────────────
     optimizer.zero_grad(set_to_none=True)
     for micro_step in range(gradient_accumulation_steps):
-        X, Y        = get_batch("train")
-        _, loss     = model(X, Y)
-        loss        = loss / gradient_accumulation_steps
+        X, Y = get_batch("train")
+        with torch.autocast(device_type=amp_dev_type, dtype=amp_dtype, enabled=use_amp):
+            _, loss, _ = model(X, Y)
+            loss       = loss / gradient_accumulation_steps
         loss.backward()
 
     if grad_clip > 0:
