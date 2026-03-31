@@ -69,8 +69,8 @@ Logits → top-k / top-p / temperature → token suivant
 ## Installation
 
 ```bash
-git clone https://github.com/ton-user/nanopopixa
-cd nanopopixa
+git clone https://github.com/kapeupro/nanoPOPIXA
+cd nanoPOPIXA
 pip install -e .
 ```
 
