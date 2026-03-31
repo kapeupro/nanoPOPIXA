@@ -80,16 +80,22 @@ Dépendances : `torch >= 2.0`, `numpy`, `tiktoken`
 
 ## Démarrage rapide
 
+> **Il n'y a pas de modèle pré-entraîné fourni** — il faut entraîner le sien.
+> C'est l'intérêt du projet : voir un LLM apprendre sous tes yeux.
+
 ```bash
-# 1. Préparer un dataset
+# 1. Télécharger et préparer un dataset (~1 MB)
 popixa prep --dataset shakespeare
 
-# 2. Entraîner
-popixa train --data_dir data/ --size small
+# 2. Entraîner un modèle nano (~2M params)
+#    CPU : ~10-15 min  |  Apple Silicon MPS : ~3-5 min  |  GPU CUDA : ~1-2 min
+popixa train --size nano --data_dir data/
 
 # 3. Discuter avec le modèle
 popixa chat
 ```
+
+Le modèle `nano` suffit pour tester toutes les fonctionnalités. Pour une meilleure qualité de génération, utilise `--size small` (~10M params, ~3× plus long à entraîner).
 
 ---
 
