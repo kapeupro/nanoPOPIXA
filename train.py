@@ -34,7 +34,6 @@ parser.add_argument("--input",    default="input.txt", help="Fichier texte brut 
 parser.add_argument("--resume",   action="store_true", help="Reprendre depuis le dernier checkpoint")
 parser.add_argument("--size",     default="medium",    choices=["nano","small","medium"],
                     help="Taille du modèle : nano (~2M), small (~10M), medium (~85M)")
-parser.add_argument("--amp",      action="store_true", help="Mixed precision bfloat16 (CUDA uniquement)")
 args = parser.parse_args()
 
 
@@ -47,9 +46,9 @@ out_dir = "out-nanopopixa"
 # ── Presets de taille ─────────────────────────────────────────────────────────
 _SIZES = {
     #          block  layer head  embd  batch  max_iters  lr      warmup
-    "nano":   (256,   4,    4,    128,  32,    5_000,     3e-4,   100),
-    "small":  (512,   6,    6,    384,  16,    10_000,    3e-4,   200),
-    "medium": (512,   12,   12,   768,  8,     10_000,    5e-4,   200),
+    "nano":   (512,   4,    4,    128,  32,    5_000,     3e-4,   100),   # RoPE → block_size 256→512
+    "small":  (1024,  6,    6,    384,  16,    10_000,    3e-4,   200),   # RoPE → block_size 512→1024
+    "medium": (1024,  12,   12,   768,  8,     10_000,    5e-4,   200),
 }
 (block_size, n_layer, n_head, n_embd,
  batch_size, max_iters, learning_rate, warmup_iters) = _SIZES[args.size]
@@ -75,13 +74,6 @@ else:
     device = "cpu"
 
 print(f"🚀 Device détecté : {device.upper()}")
-
-# Mixed precision — bfloat16 sur CUDA uniquement (stable sans GradScaler)
-use_amp      = args.amp and device == "cuda"
-amp_dtype    = torch.bfloat16
-amp_dev_type = "cuda"
-if use_amp:
-    print("⚡ Mixed precision bfloat16 activé")
 
 
 # ─────────────────────────────────────────
@@ -171,8 +163,7 @@ def estimate_loss(model):
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(split)
-            with torch.autocast(device_type=amp_dev_type, dtype=amp_dtype, enabled=use_amp):
-                _, loss, _ = model(X, Y)
+            _, loss = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train(True)
@@ -266,10 +257,9 @@ for iter in range(iter_start, max_iters):
     # ── Forward + backward avec gradient accumulation ─────────────────────────
     optimizer.zero_grad(set_to_none=True)
     for micro_step in range(gradient_accumulation_steps):
-        X, Y = get_batch("train")
-        with torch.autocast(device_type=amp_dev_type, dtype=amp_dtype, enabled=use_amp):
-            _, loss, _ = model(X, Y)
-            loss       = loss / gradient_accumulation_steps
+        X, Y        = get_batch("train")
+        _, loss     = model(X, Y)
+        loss        = loss / gradient_accumulation_steps
         loss.backward()
 
     if grad_clip > 0:
@@ -286,5 +276,5 @@ print(f"\n✅ Entraînement terminé en {time.time() - t0:.1f}s")
 print("\n📝 Exemple de génération :\n")
 model.train(False)
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
-output  = decode(model.generate(context, max_new_tokens=500, temperature=0.8, top_k=40)[0].tolist())
+output  = decode(model.generate(context, max_new_tokens=500, temperature=0.8, top_k=40, top_p=0.9)[0].tolist())
 print(output)
