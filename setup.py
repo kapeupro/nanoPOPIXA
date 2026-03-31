@@ -8,19 +8,19 @@ setup(
     py_modules=[
         "model",
         "train",
+        "generate",
         "chat",
         "data_prep",
         "scrape",
         "popixa_cli",
         "splash",
         "monitor",
+        "session_cache",
     ],
     install_requires=[
         "torch>=2.0.0",
         "numpy",
         "tiktoken",
-        "requests",
-        "beautifulsoup4",
     ],
     entry_points={
         "console_scripts": [

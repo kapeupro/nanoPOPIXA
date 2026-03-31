@@ -14,8 +14,6 @@ dependencies = [
     "torch>=2.0.0",
     "numpy",
     "tiktoken",
-    "requests",
-    "beautifulsoup4",
 ]
 
 [project.scripts]

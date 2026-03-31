@@ -28,7 +28,6 @@ DATASETS = {
         "https://unpkg.com/react@18/umd/react.development.js",
         "https://unpkg.com/react-dom@18/umd/react-dom.development.js",
     ],
-    "polyglot": ["polyglot_dev.txt", "dev_code.txt", "web_fr.txt"],
 }
 
 
@@ -44,12 +43,6 @@ def _download_multi(urls: list, filepath: str) -> None:
     import tempfile
     parts = []
     for url in urls:
-        if os.path.isfile(url):
-            print(f"  Fichier local : {url}")
-            with open(url, "r", encoding="utf-8", errors="replace") as f:
-                parts.append(f"// -- {url} --\n" + f.read())
-            continue
-
         name = url.rstrip("/").split("/")[-1]
         print(f"  Téléchargement : {url}")
         with tempfile.NamedTemporaryFile(delete=False, suffix=".js") as tmp:
@@ -60,7 +53,7 @@ def _download_multi(urls: list, filepath: str) -> None:
     with open(filepath, "w", encoding="utf-8") as f:
         f.write("\n\n".join(parts))
     size_mb = os.path.getsize(filepath) / 1e6
-    print(f"  -> {filepath} ({size_mb:.1f} Mo, {len(urls)} sources)")
+    print(f"  -> {filepath} ({size_mb:.1f} Mo, {len(urls)} fichiers)")
 
 
 # ─── Tokenisation ─────────────────────────────────────────────────────────────

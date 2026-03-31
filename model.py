@@ -345,7 +345,8 @@ class nanoPOPIXA(nn.Module):
 
     # ── Sampling ─────────────────────────────────────────────────────────────
 
-    def _apply_sampling(self, logits, temperature, top_k, top_p, repetition_penalty, idx):
+    def _apply_sampling(self, logits, temperature, top_k, top_p, repetition_penalty, idx,
+                        logit_bias=None):
         """
         Applique dans l'ordre :
           1. Temperature scaling
@@ -370,6 +371,12 @@ class nanoPOPIXA(nn.Module):
             logits[logits < v[:, [-1]]] = float("-inf")
 
         # Top-p — nucleus sampling : garde le noyau minimal qui couvre p% de la proba
+        # Logit bias — forçage de tokens (structured outputs, JSON mode)
+        if logit_bias is not None:
+            for token_id, bias in logit_bias.items():
+                if 0 <= token_id < logits.size(-1):
+                    logits[0, token_id] += bias
+
         if top_p is not None and top_p < 1.0:
             sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
             cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
@@ -437,14 +444,21 @@ class nanoPOPIXA(nn.Module):
 
     @torch.no_grad()
     def generate_stream(self, idx, max_new_tokens, temperature=1.0, top_k=None,
-                        repetition_penalty=1.0, top_p=None, stop_on_repetition=False):
+                        repetition_penalty=1.0, top_p=None, stop_on_repetition=False,
+                        initial_past_kvs=None, cache_ref=None):
         """
         Streaming token par token avec KV-Cache.
         Yield chaque token généré (int).
+
+        initial_past_kvs : KV-cache existant (session persistante) — si fourni,
+                           seul `idx` (nouveaux tokens) est traité en prefill,
+                           le reste est récupéré depuis le cache. O(N_new) au lieu de O(N_total).
+        cache_ref        : liste mutable — si fournie, contiendra [past_kvs] après
+                           épuisement du générateur (pour sauvegarde session).
         stop_on_repetition : s'arrête automatiquement si la génération diverge.
         """
-        # Prefill
-        logits, past_kvs = self(idx)
+        # Prefill — avec cache existant si la session est restaurée
+        logits, past_kvs = self(idx, past_kvs=initial_past_kvs)
         probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
         idx_next = torch.multinomial(probs, num_samples=1)
         idx      = torch.cat((idx, idx_next), dim=1)
@@ -464,7 +478,28 @@ class nanoPOPIXA(nn.Module):
                 break
             yield tok
 
+        # Stocker le cache final pour persistance inter-sessions
+        if cache_ref is not None:
+            cache_ref.clear()
+            cache_ref.append(past_kvs)
+
     # ── Thinking blocks (Claude-inspired) ───────────────────────────────────
+
+    @staticmethod
+    def adaptive_think_budget(prompt_len: int) -> int:
+        """
+        Budget de thinking adaptatif selon la complexité estimée du prompt.
+        Inspiré de l'adaptive thinking de Claude 4.6+ (pas de budget fixe — le modèle
+        décide lui-même). Ici on estime via la longueur du prompt.
+        """
+        if prompt_len < 50:
+            return 50
+        elif prompt_len < 150:
+            return 150
+        elif prompt_len < 400:
+            return 300
+        else:
+            return 500
 
     @torch.no_grad()
     def generate_stream_with_thinking(
@@ -475,6 +510,8 @@ class nanoPOPIXA(nn.Module):
         top_k: int = None,
         top_p: float = 0.9,
         repetition_penalty: float = 1.0,
+        initial_past_kvs=None,
+        cache_ref=None,
     ):
         """
         Génération deux phases inspirée de Claude's extended thinking.
@@ -490,8 +527,8 @@ class nanoPOPIXA(nn.Module):
         Yield : tuples (phase, token_int)
             phase = 'think' | 'response'
         """
-        # ── Prefill ──────────────────────────────────────────────────────────
-        logits, past_kvs = self(idx)
+        # ── Prefill — avec cache existant si session restaurée ───────────────
+        logits, past_kvs = self(idx, past_kvs=initial_past_kvs)
 
         # ── Phase 1 : Thinking — temperature=1 (contrainte API Claude) ──────
         generated_think = []
@@ -533,3 +570,205 @@ class nanoPOPIXA(nn.Module):
             yield ("response", tok)
             if self._is_repetitive(generated_resp):
                 break  # Diminishing returns → fin de la réponse
+
+        # Stocker le cache final pour persistance inter-sessions
+        if cache_ref is not None:
+            cache_ref.clear()
+            cache_ref.append(past_kvs)
+
+    # ── Interleaved Thinking (Claude-inspired) ───────────────────────────────
+
+    @torch.no_grad()
+    def generate_stream_with_interleaved_thinking(
+        self, idx,
+        response_budget: int = 300,
+        think_per_interleave: int = 20,
+        interleave_every: int = 50,
+        temperature: float = 0.8,
+        top_k: int = None,
+        top_p: float = 0.9,
+        repetition_penalty: float = 1.0,
+        initial_past_kvs=None,
+        cache_ref=None,
+    ):
+        """
+        Thinking intercalé — inspiré du beta `interleaved-thinking-2025-05-14`.
+
+        Alterne génération normale et mini-pauses de réflexion :
+          1. Génère `interleave_every` tokens de réponse
+          2. Pause : génère `think_per_interleave` tokens de thinking (temp=1)
+          3. Reprend la réponse — en boucle jusqu'à response_budget
+
+        Avantage vs thinking pur : la réflexion est distribuée tout au long
+        de la réponse, permettant des corrections en cours de route.
+
+        Yield : tuples (phase, token_int)  où phase = 'think' | 'response'
+        """
+        logits, past_kvs = self(idx, past_kvs=initial_past_kvs)
+
+        generated_resp  = []
+        resp_count      = 0  # tokens réponse depuis la dernière pause
+
+        # Premier token — réponse
+        probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
+        idx_next = torch.multinomial(probs, num_samples=1)
+        idx      = torch.cat((idx, idx_next), dim=1)
+        tok = idx_next[0, 0].item()
+        generated_resp.append(tok)
+        resp_count += 1
+        yield ("response", tok)
+
+        for step in range(response_budget - 1):
+            # ── Mini-pause thinking ? ───────────────────────────────────────
+            if resp_count >= interleave_every:
+                resp_count = 0
+                for _ in range(think_per_interleave):
+                    logits, past_kvs = self(idx[:, [-1]], past_kvs=past_kvs)
+                    probs    = self._apply_sampling(logits, 1.0, top_k, top_p, repetition_penalty, idx)
+                    idx_next = torch.multinomial(probs, num_samples=1)
+                    idx      = torch.cat((idx, idx_next), dim=1)
+                    yield ("think", idx_next[0, 0].item())
+
+            # ── Token de réponse ────────────────────────────────────────────
+            logits, past_kvs = self(idx[:, [-1]], past_kvs=past_kvs)
+            probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx      = torch.cat((idx, idx_next), dim=1)
+            tok = idx_next[0, 0].item()
+            generated_resp.append(tok)
+            resp_count += 1
+            yield ("response", tok)
+
+            if self._is_repetitive(generated_resp):
+                break
+
+        if cache_ref is not None:
+            cache_ref.clear()
+            cache_ref.append(past_kvs)
+
+    # ── Speculative Decoding (fast mode) ─────────────────────────────────────
+
+    @torch.no_grad()
+    def speculative_generate_stream(
+        self, idx,
+        max_new_tokens: int = 200,
+        n_draft: int = 4,
+        temperature: float = 0.8,
+        top_k: int = None,
+        top_p: float = 0.9,
+        repetition_penalty: float = 1.0,
+        initial_past_kvs=None,
+        cache_ref=None,
+    ):
+        """
+        Speculative decoding — inspiré du beta `fast-mode-2026-02-01`.
+
+        Principe :
+          1. Draft  — génère N tokens greedy (temp≈0) avec le MÊME modèle
+          2. Verify — passe les N tokens draft en une seule passe (O(N) vs N×O(1))
+          3. Accept/Reject — compare les distributions draft vs verif token par token
+             · Si compat : accepte le token (ratio ≥ 1 → accept certain)
+             · Sinon    : rejette et re-sample depuis la distribution corrigée
+          4. Bonus token — si tous les N drafts sont acceptés, génère 1 token bonus
+             grâce aux logits du dernier step du verifier.
+
+        Gain théorique : 2-3× plus rapide sur GPU (même modèle — pas de draft léger).
+        Le gain réel sur CPU/MPS est moindre car la parallélisation est limitée.
+
+        Yield : int (token généré)
+        """
+        # Prefill
+        logits, past_kvs = self(idx, past_kvs=initial_past_kvs)
+        probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
+        idx_next = torch.multinomial(probs, num_samples=1)
+        idx      = torch.cat((idx, idx_next), dim=1)
+        yield idx_next[0, 0].item()
+
+        generated = 1
+
+        while generated < max_new_tokens:
+            n = min(n_draft, max_new_tokens - generated)
+
+            # ── Phase Draft : N tokens greedy (temp≈0) ───────────────────────
+            draft_tokens = []
+            draft_probs  = []   # distributions du draft pour accept/reject
+            draft_kvs    = past_kvs   # on clone le KV-cache au début du draft
+
+            draft_idx    = idx
+            for _ in range(n):
+                d_logits, draft_kvs = self(draft_idx[:, [-1]], past_kvs=draft_kvs)
+                # Greedy pour le draft — temp très basse (≈ argmax)
+                d_probs = self._apply_sampling(
+                    d_logits, 0.05, top_k, top_p, repetition_penalty, draft_idx
+                )
+                d_next  = torch.multinomial(d_probs, num_samples=1)
+                draft_tokens.append(d_next[0, 0].item())
+                draft_probs.append(d_probs[0])           # (vocab_size,)
+                draft_idx = torch.cat((draft_idx, d_next), dim=1)
+
+            # ── Phase Verify : une passe sur tous les tokens draft ────────────
+            # On nourrit les N tokens draft d'un coup au verifier.
+            draft_tensor = torch.tensor(
+                draft_tokens, dtype=torch.long, device=idx.device
+            ).unsqueeze(0)                               # (1, n)
+            v_logits, v_kvs = self(draft_tensor, past_kvs=past_kvs)
+            # v_logits : (1, n, vocab_size) — logits pour chaque position
+
+            # ── Accept/Reject ─────────────────────────────────────────────────
+            accepted      = 0
+            last_good_kvs = past_kvs
+
+            for i, tok in enumerate(draft_tokens):
+                # Distribution verifier au step i (token draft[i] à partir du contexte)
+                step_logits = v_logits[:, i:i+1, :]     # (1, 1, vocab_size)
+                v_probs     = self._apply_sampling(
+                    step_logits, temperature, top_k, top_p, repetition_penalty, idx
+                )[0]                                     # (vocab_size,)
+
+                d_prob = draft_probs[i][tok].item()
+                v_prob = v_probs[tok].item()
+
+                accept_ratio = min(1.0, v_prob / (d_prob + 1e-9))
+                if torch.rand(1).item() < accept_ratio:
+                    # Token accepté
+                    idx_next = torch.tensor([[tok]], dtype=torch.long, device=idx.device)
+                    idx      = torch.cat((idx, idx_next), dim=1)
+                    yield tok
+                    generated += 1
+                    accepted  += 1
+                else:
+                    # Rejet — re-sample depuis la distribution corrigée
+                    # p_corrected = max(0, p_verifier - p_draft) normalisé
+                    corrected = torch.clamp(v_probs - draft_probs[i], min=0)
+                    s = corrected.sum()
+                    if s > 0:
+                        corrected /= s
+                        tok_corr = torch.multinomial(corrected, num_samples=1).item()
+                    else:
+                        tok_corr = v_probs.argmax().item()
+                    idx_next = torch.tensor([[tok_corr]], dtype=torch.long, device=idx.device)
+                    idx      = torch.cat((idx, idx_next), dim=1)
+                    yield tok_corr
+                    generated += 1
+                    break
+
+            # Mettre à jour le KV-cache principal avec le verifier
+            # (on repart du verifier dont la passe couvre tout le draft)
+            past_kvs = v_kvs
+
+            # ── Bonus token si tous les drafts acceptés ───────────────────────
+            if accepted == n and generated < max_new_tokens:
+                b_logits = v_logits[:, -1:, :]          # dernier logit du verifier
+                b_probs  = self._apply_sampling(
+                    b_logits, temperature, top_k, top_p, repetition_penalty, idx
+                )
+                b_next   = torch.multinomial(b_probs, num_samples=1)
+                idx      = torch.cat((idx, b_next), dim=1)
+                past_kvs_bonus = None
+                _, past_kvs = self(b_next, past_kvs=past_kvs)
+                yield b_next[0, 0].item()
+                generated += 1
+
+        if cache_ref is not None:
+            cache_ref.clear()
+            cache_ref.append(past_kvs)

@@ -26,7 +26,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy tiktoken requests beautifulsoup4
+          pip install numpy tiktoken
 
       - name: Install package
         run: pip install -e . --no-deps
@@ -35,24 +35,25 @@ jobs:
         run: |
           python -c "from model import nanoPOPIXA, POPIXAConfig; print('model OK')"
           python -c "from data_prep import prepare, collect_code; print('data_prep OK')"
+          python -c "from session_cache import save_session, load_session, clear_session; print('session_cache OK')"
           python -c "from popixa_cli import _build_parser; _build_parser(); print('CLI OK')"
 
       - name: Smoke test — model forward pass
         run: |
-          python -c "
+          python - << 'PYEOF'
           import torch
           from model import nanoPOPIXA, POPIXAConfig
           cfg   = POPIXAConfig(block_size=32, vocab_size=65, n_layer=2, n_head=2, n_embd=64)
           model = nanoPOPIXA(cfg)
           idx   = torch.zeros((1, 8), dtype=torch.long)
           logits, loss = model(idx, idx)
-          assert logits.shape == (1, 8, 65)
-          print('forward OK — logits', logits.shape, '| loss', round(loss.item(), 4))
-          "
+          assert logits.shape == (1, 8, 65), f"shape inattendue: {logits.shape}"
+          print(f"forward OK — logits {logits.shape} | loss {loss:.4f}")
+          PYEOF
 
-      - name: Smoke test — generation
+      - name: Smoke test — generation + KV-cache
         run: |
-          python -c "
+          python - << 'PYEOF'
           import torch
           from model import nanoPOPIXA, POPIXAConfig
           cfg   = POPIXAConfig(block_size=32, vocab_size=65, n_layer=2, n_head=2, n_embd=64)
@@ -60,8 +61,92 @@ jobs:
           model.train(False)
           idx = torch.zeros((1, 1), dtype=torch.long)
           out = model.generate(idx, max_new_tokens=10, temperature=1.0, top_k=5)
-          assert out.shape == (1, 11)
-          tokens = list(model.generate_stream(idx, max_new_tokens=5))
+          assert out.shape == (1, 11), f"shape inattendue: {out.shape}"
+          cache_ref = []
+          tokens = list(model.generate_stream(idx, max_new_tokens=5, cache_ref=cache_ref))
           assert len(tokens) == 5
-          print('generation OK —', out.shape, '| stream', len(tokens), 'tokens')
-          "
+          assert len(cache_ref) == 1, "cache_ref doit contenir le KV-cache final"
+          print(f"generation OK — {out.shape} | stream {len(tokens)} tokens | cache OK")
+          PYEOF
+
+      - name: Smoke test — thinking blocks
+        run: |
+          python - << 'PYEOF'
+          import torch
+          from model import nanoPOPIXA, POPIXAConfig
+          cfg   = POPIXAConfig(block_size=64, vocab_size=65, n_layer=2, n_head=2, n_embd=64)
+          model = nanoPOPIXA(cfg)
+          model.train(False)
+          idx = torch.zeros((1, 1), dtype=torch.long)
+          phases = [(p, t) for p, t in model.generate_stream_with_thinking(
+              idx, think_budget=5, response_budget=5
+          )]
+          think_toks = [t for p, t in phases if p == "think"]
+          resp_toks  = [t for p, t in phases if p == "response"]
+          assert len(think_toks) > 0, "Pas de tokens thinking"
+          assert len(resp_toks)  > 0, "Pas de tokens reponse"
+          print(f"thinking OK — {len(think_toks)} think + {len(resp_toks)} response")
+          PYEOF
+
+      - name: Smoke test — speculative decoding
+        run: |
+          python - << 'PYEOF'
+          import torch
+          from model import nanoPOPIXA, POPIXAConfig
+          cfg   = POPIXAConfig(block_size=64, vocab_size=65, n_layer=2, n_head=2, n_embd=64)
+          model = nanoPOPIXA(cfg)
+          model.train(False)
+          idx    = torch.zeros((1, 1), dtype=torch.long)
+          tokens = list(model.speculative_generate_stream(idx, max_new_tokens=10, n_draft=3))
+          assert len(tokens) > 0, "Speculative decoding n'a rien genere"
+          print(f"speculative OK — {len(tokens)} tokens generes")
+          PYEOF
+
+      - name: Smoke test — session cache
+        run: |
+          python - << 'PYEOF'
+          import tempfile, os, torch
+          from model import nanoPOPIXA, POPIXAConfig
+          from session_cache import save_session, load_session, clear_session, session_info
+          with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+              ckpt_path = f.name
+              torch.save({"dummy": True}, f.name)
+          cfg   = POPIXAConfig(block_size=32, vocab_size=65, n_layer=2, n_head=2, n_embd=64)
+          model = nanoPOPIXA(cfg)
+          model.train(False)
+          idx = torch.zeros((1, 1), dtype=torch.long)
+          cache_ref = []
+          list(model.generate_stream(idx, max_new_tokens=3, cache_ref=cache_ref))
+          past_kvs = cache_ref[0]
+          with tempfile.NamedTemporaryFile(suffix=".cache", delete=False) as f:
+              cache_path = f.name
+          save_session(cache_path, past_kvs, [0, 1, 2], ckpt_path)
+          kvs_loaded, ids_loaded = load_session(cache_path, ckpt_path, "cpu")
+          assert kvs_loaded is not None, "Chargement session a echoue"
+          assert ids_loaded == [0, 1, 2]
+          info = session_info(cache_path, ckpt_path)
+          assert info["valid"]
+          clear_session(cache_path)
+          assert not os.path.exists(cache_path)
+          os.unlink(ckpt_path)
+          print("session_cache OK — save/load/clear/info")
+          PYEOF
+
+      - name: Smoke test — adaptive think budget + LongRoPE config
+        run: |
+          python - << 'PYEOF'
+          import torch
+          from model import nanoPOPIXA, POPIXAConfig
+          assert nanoPOPIXA.adaptive_think_budget(10)  == 50
+          assert nanoPOPIXA.adaptive_think_budget(100) == 150
+          assert nanoPOPIXA.adaptive_think_budget(200) == 300
+          assert nanoPOPIXA.adaptive_think_budget(500) == 500
+          print("adaptive_think_budget OK")
+          cfg = POPIXAConfig(block_size=32, vocab_size=65, n_layer=2, n_head=2, n_embd=64,
+                             rope_base=500_000)
+          model = nanoPOPIXA(cfg)
+          assert model.config.rope_base == 500_000
+          idx = torch.zeros((1, 4), dtype=torch.long)
+          _, _ = model(idx, idx)
+          print("LongRoPE config OK")
+          PYEOF

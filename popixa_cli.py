@@ -58,9 +58,20 @@ Exemples :
 
 
 def cmd_chat(args):
-    from chat import run_chat
-    top_p = args.top_p if args.top_p > 0 else None
-    run_chat(args.checkpoint, args.tokens, args.temp, args.top_k, args.penalty, top_p)
+    from chat import run_chat, EFFORT_PRESETS
+    max_tokens  = args.tokens
+    temperature = args.temp
+    top_k       = args.top_k
+    top_p       = getattr(args, "top_p", None)
+    penalty     = args.penalty
+    if getattr(args, "effort", None):
+        p           = EFFORT_PRESETS[args.effort]
+        temperature = p["temperature"]
+        top_k       = p["top_k"]
+        top_p       = p["top_p"]
+        max_tokens  = p["max_tokens"]
+    run_chat(args.checkpoint, max_tokens, temperature, top_k,
+             repetition_penalty=penalty, top_p=top_p)
 
 
 def cmd_train(args):
@@ -73,8 +84,6 @@ def cmd_train(args):
         _sys.argv += ["--input", args.input]
     if args.resume:
         _sys.argv += ["--resume"]
-    if args.amp:
-        _sys.argv += ["--amp"]
     train_path = os.path.join(os.path.dirname(__file__), "train.py")
     runpy.run_path(train_path, run_name="__main__")
 
@@ -130,9 +139,8 @@ def cmd_gen(args):
         ctx = torch.zeros((1, 1), dtype=torch.long, device=device)
 
     with torch.no_grad():
-        top_p = args.top_p if args.top_p > 0 else None
         out = model.generate(ctx, max_new_tokens=args.tokens, temperature=args.temp,
-                             top_k=args.top_k, repetition_penalty=args.penalty, top_p=top_p)
+                             top_k=args.top_k, repetition_penalty=args.penalty)
 
     text = decode(out[0].tolist())
     print(text[len(args.prompt):] if args.prompt else text)
@@ -149,9 +157,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--temp",       type=float, default=0.8)
     p_chat.add_argument("--tokens",     type=int,   default=200)
     p_chat.add_argument("--top_k",      type=int,   default=40)
+    p_chat.add_argument("--top_p",      type=float, default=None)
     p_chat.add_argument("--penalty",    type=float, default=1.0)
-    p_chat.add_argument("--top_p",      type=float, default=0.0,
-                        help="Nucleus sampling 0..1 (0 = désactivé)")
+    p_chat.add_argument("--effort",     default=None,
+                        choices=["low", "medium", "high", "max"])
 
     # ── train ─────────────────────────────────────────────────────────
     p_train = sub.add_parser("train")
@@ -160,8 +169,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--size",     default="medium",
                          choices=["nano", "small", "medium"])
     p_train.add_argument("--resume",   action="store_true")
-    p_train.add_argument("--amp",      action="store_true",
-                         help="Mixed precision bfloat16 (CUDA uniquement)")
 
     # ── prep ──────────────────────────────────────────────────────────
     p_prep = sub.add_parser("prep")
@@ -196,8 +203,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--tokens",     type=int,   default=300)
     p_gen.add_argument("--top_k",      type=int,   default=40)
     p_gen.add_argument("--penalty",    type=float, default=1.0)
-    p_gen.add_argument("--top_p",      type=float, default=0.0,
-                       help="Nucleus sampling 0..1 (0 = désactivé)")
 
     return parser
 

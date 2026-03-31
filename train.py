@@ -29,11 +29,13 @@ from model import nanoPOPIXA, POPIXAConfig
 # ─────────────────────────────────────────
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--data_dir", default=None,        help="Dossier data/ créé par data_prep.py")
-parser.add_argument("--input",    default="input.txt", help="Fichier texte brut (si pas de --data_dir)")
-parser.add_argument("--resume",   action="store_true", help="Reprendre depuis le dernier checkpoint")
-parser.add_argument("--size",     default="medium",    choices=["nano","small","medium"],
+parser.add_argument("--data_dir",  default=None,        help="Dossier data/ créé par data_prep.py")
+parser.add_argument("--input",     default="input.txt", help="Fichier texte brut (si pas de --data_dir)")
+parser.add_argument("--resume",    action="store_true", help="Reprendre depuis le dernier checkpoint")
+parser.add_argument("--size",      default="medium",    choices=["nano","small","medium"],
                     help="Taille du modèle : nano (~2M), small (~10M), medium (~85M)")
+parser.add_argument("--longrope",  action="store_true",
+                    help="LongRoPE : rope_base=500_000 → fenêtre contexte ~10× (beta context-1m)")
 args = parser.parse_args()
 
 
@@ -174,6 +176,10 @@ def estimate_loss(model):
 # Initialisation du modèle
 # ─────────────────────────────────────────
 
+rope_base = 500_000 if args.longrope else 10_000
+if args.longrope:
+    print("🔭 LongRoPE activé — rope_base=500_000 (contexte ~10× étendu)")
+
 config = POPIXAConfig(
     block_size=block_size,
     vocab_size=vocab_size,
@@ -181,6 +187,7 @@ config = POPIXAConfig(
     n_head=n_head,
     n_embd=n_embd,
     dropout=dropout,
+    rope_base=rope_base,
 )
 
 model     = nanoPOPIXA(config).to(device)
@@ -214,7 +221,8 @@ t_last = t0
 # Log propre à chaque run (sauf reprise)
 if not args.resume:
     with open("train.log", "w", encoding="utf-8") as f:
-        f.write(f"# max_iters={max_iters} eval_interval={eval_interval}\n")
+        f.write(f"# max_iters={max_iters} eval_interval={eval_interval}"
+                f" batch_size={batch_size} block_size={block_size}\n")
 
 for iter in range(iter_start, max_iters):
 

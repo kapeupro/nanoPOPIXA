@@ -66,14 +66,19 @@ _LOG_RE     = re.compile(
     r"iter\s+(\d+)\s*\|\s*train\s+([\d.]+)\s*\|\s*val\s+([\d.]+)"
     r"\s*\|\s*lr\s+([\d.eE+\-]+)\s*\|\s*([\d.]+)s"
 )
-_HEADER_RE  = re.compile(r"#\s*max_iters=(\d+)\s+eval_interval=(\d+)")
+_HEADER_RE  = re.compile(
+    r"#\s*max_iters=(\d+)\s+eval_interval=(\d+)"
+    r"(?:\s+batch_size=(\d+)\s+block_size=(\d+))?"
+)
 
 
-def parse_log(path: str) -> tuple[list[Entry], Optional[int], int]:
-    """Lit le fichier log. Retourne (entries, max_iters, eval_interval)."""
+def parse_log(path: str) -> tuple[list[Entry], Optional[int], int, int, int]:
+    """Lit le fichier log. Retourne (entries, max_iters, eval_interval, batch_size, block_size)."""
     entries       = []
     max_iters     = None
     eval_interval = 1
+    batch_size    = 1
+    block_size    = 1
     try:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -81,6 +86,9 @@ def parse_log(path: str) -> tuple[list[Entry], Optional[int], int]:
                 if mh:
                     max_iters     = int(mh.group(1))
                     eval_interval = int(mh.group(2))
+                    if mh.group(3) and mh.group(4):
+                        batch_size = int(mh.group(3))
+                        block_size = int(mh.group(4))
                     continue
                 m = _LOG_RE.search(line)
                 if m:
@@ -96,7 +104,30 @@ def parse_log(path: str) -> tuple[list[Entry], Optional[int], int]:
                         continue
     except (FileNotFoundError, PermissionError):
         pass
-    return entries, max_iters, eval_interval
+    return entries, max_iters, eval_interval, batch_size, block_size
+
+
+def _get_memory_str() -> str:
+    """Retourne une string courte sur la mémoire GPU/MPS ou RAM."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            used = torch.cuda.memory_allocated() / 1024**3
+            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            return f"GPU {used:.1f}/{total:.1f} GB"
+        if torch.backends.mps.is_available():
+            # MPS ne expose pas la mémoire allouée facilement — utiliser psutil RAM
+            pass
+    except ImportError:
+        pass
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        used_gb  = (vm.total - vm.available) / 1024**3
+        total_gb = vm.total / 1024**3
+        return f"RAM {used_gb:.1f}/{total_gb:.1f} GB"
+    except ImportError:
+        return ""
 
 
 # ─── Canvas Braille ────────────────────────────────────────────────────────────
@@ -233,7 +264,8 @@ def _chart_section(canvas: BrailleCanvas,
 
 
 def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.log",
-                     max_iters: Optional[int] = None, eval_interval: int = 1) -> list[str]:
+                     max_iters: Optional[int] = None, eval_interval: int = 1,
+                     batch_size: int = 1, block_size: int = 1) -> list[str]:
     """Construit le dashboard complet. Retourne une liste de lignes."""
     lines = []
 
@@ -252,9 +284,18 @@ def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.l
     recent   = entries[-min(n, 10):]
     avg_dur  = sum(e.duration for e in recent) / len(recent)
     if avg_dur > 0:
-        speed = f"{eval_interval / avg_dur:.2f} it/s"
+        its = eval_interval / avg_dur
+        # tok/s = it/s × batch_size × block_size (total tokens traités par seconde)
+        toks_per_sec = its * batch_size * block_size
+        if toks_per_sec >= 1_000:
+            speed = f"{its:.2f} it/s  ·  {toks_per_sec/1000:.1f}k tok/s"
+        else:
+            speed = f"{its:.2f} it/s  ·  {toks_per_sec:.0f} tok/s"
     else:
         speed = "–"
+
+    # Mémoire
+    mem_str = _get_memory_str()
 
     # ETA — si max_iters connu
     if max_iters and avg_dur > 0:
@@ -280,6 +321,7 @@ def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.l
         + f"  ·  lr {last.lr:.2e}"
         + f"  ·  {speed}"
         + eta_str
+        + (f"  ·  {mem_str}" if mem_str else "")
     )
 
     lines.append(_box_top(w, "nanoPOPIXA Monitor"))
@@ -334,14 +376,15 @@ def run_monitor(log_path: str, refresh: float):
     sys.stdout.flush()
     try:
         while True:
-            entries, max_iters, eval_interval = parse_log(abs_path)
+            entries, max_iters, eval_interval, batch_size, block_size = parse_log(abs_path)
             try:
                 cols = os.get_terminal_size().columns
             except OSError:
                 cols = 80
             w     = min(cols, 90)
             lines = render_dashboard(entries, w=w, log_path=abs_path,
-                                     max_iters=max_iters, eval_interval=eval_interval)
+                                     max_iters=max_iters, eval_interval=eval_interval,
+                                     batch_size=batch_size, block_size=block_size)
             sys.stdout.write("\033[2J\033[H")
             sys.stdout.write("\n".join(lines) + "\n")
             sys.stdout.write(
