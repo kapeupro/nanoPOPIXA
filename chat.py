@@ -41,6 +41,12 @@ CACHE_PATH = "out-nanopopixa/session.cache"   # fichier KV-cache persistant
 # Claude : WARNING_BUFFER=20000, AUTOCOMPACT_BUFFER=13000, threshold=90%
 CTX_WARNING_PCT = 0.80   # 80% → avertissement
 CTX_COMPACT_PCT = 0.90   # 90% → compaction automatique (garde 50% récent)
+MAX_COMPACT_FAILURES = 3 # circuit breaker — désactive l'auto-compact après 3 échecs consécutifs
+
+# ─── Estimation tokens (inspiré toolLimits.ts) ───────────────────────────────
+# Claude : BYTES_PER_TOKEN = 4 (estimation conservative)
+# Utilisé pour convertir len(history) chars → tokens estimés
+BYTES_PER_TOKEN = 4
 
 # ─── Effort presets (inspiré effort.ts) ──────────────────────────────────────
 # Claude définit low/medium/high/max avec des budgets tokens et températures
@@ -276,17 +282,23 @@ def stream_fast(model, encode, decode, context_str: str,
 
 
 # ─── Gestion contexte (inspiré autoCompact.ts) ───────────────────────────────
+def _estimate_tokens(text: str) -> int:
+    """Estime le nombre de tokens depuis une chaîne (BYTES_PER_TOKEN=4, d'après toolLimits.ts)."""
+    return max(1, len(text.encode("utf-8")) // BYTES_PER_TOKEN)
+
+
 def update_context(history: str, new_content: str, blk_size: int) -> tuple[str, bool]:
     """
     Ajoute new_content à l'historique.
     Retourne (history_updated, was_compacted).
-    Compacte automatiquement à 90% (garde les 50% les plus récents).
+    Compacte automatiquement à 90% en tokens estimés (garde les 50% les plus récents).
     """
     history += new_content
-    ctx_pct  = len(history) / blk_size
+    ctx_pct  = _estimate_tokens(history) / blk_size
 
     if ctx_pct >= CTX_COMPACT_PCT:
-        keep    = int(blk_size * 0.50)
+        # Garder les 50% derniers en caractères (approx)
+        keep    = len(history) // 2
         history = history[-keep:]
         return history, True
 
@@ -294,11 +306,11 @@ def update_context(history: str, new_content: str, blk_size: int) -> tuple[str, 
 
 
 def context_warning(history: str, blk_size: int):
-    """Affiche un warning si le contexte dépasse 80%."""
-    pct = len(history) / blk_size
+    """Affiche un warning si le contexte estimé dépasse 80%."""
+    pct = _estimate_tokens(history) / blk_size
     if pct >= CTX_WARNING_PCT:
         bar_len = 20
-        filled  = int(bar_len * pct)
+        filled  = int(bar_len * min(pct, 1.0))
         bar     = "█" * filled + "░" * (bar_len - filled)
         print(WARN_C + f"  ⚠ Contexte [{bar}] {pct*100:.0f}%"
               + INFO_C + " — compaction auto à 90%" + R)
@@ -367,7 +379,11 @@ def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: i
     print(CMD_C  + "    /adaptive"     + INFO_C + "         → budget thinking adaptatif selon prompt"  + R)
     print(CMD_C  + "    /interleaved"  + INFO_C + "       → thinking intercalé toutes les N tokens"    + R)
     print(CMD_C  + "    /fast"         + INFO_C + "             → speculative decoding ⚡ (fast mode)" + R)
+    print(CMD_C  + "    /redactthink"  + INFO_C + "       → exclure tokens thinking du contexte"       + R)
     print(CMD_C  + "    /effort low|medium|high|max" + INFO_C + " → preset tout-en-un"                 + R)
+    print(INFO_C + "  Budget & contexte :" + R)
+    print(CMD_C  + "    /taskbudget 2000" + INFO_C + "  → budget tokens sur la tâche (multi-tours)"   + R)
+    print(CMD_C  + "    /taskbudget off"  + INFO_C + "   → désactiver le task budget"                  + R)
     print(INFO_C + "  Contexte & outils :" + R)
     print(CMD_C  + "    /reset"         + INFO_C + "           → remettre le contexte à zéro"          + R)
     print(CMD_C  + "    /ctx"           + INFO_C + "             → afficher l'état du contexte"         + R)
@@ -381,22 +397,36 @@ def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: i
     # Reconstruire l'historique texte depuis le cache restauré
     history    = decode(session_token_ids) if session_token_ids else ""
     turns      = []
-    think_mode      = False   # activé par /think
-    adaptive_mode   = False   # budget de thinking adaptatif
-    fast_mode       = False   # speculative decoding
-    interleaved_mode = False  # thinking intercalé
-    n_draft         = 4       # tokens draft en fast mode
-    think_per_inter = 20      # tokens thinking par pause (interleaved)
-    interleave_every = 50     # tokens réponse entre deux pauses (interleaved)
+    think_mode       = False   # activé par /think
+    adaptive_mode    = False   # budget de thinking adaptatif
+    fast_mode        = False   # speculative decoding
+    interleaved_mode = False   # thinking intercalé
+    redact_thinking  = False   # supprime tokens thinking du contexte (redact-thinking-2026-02-12)
+    n_draft          = 4       # tokens draft en fast mode
+    think_per_inter  = 20      # tokens thinking par pause (interleaved)
+    interleave_every = 50      # tokens réponse entre deux pauses (interleaved)
+
+    # ── Circuit breaker auto-compact (MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3) ─
+    compact_failures = 0       # nb d'échecs consécutifs de compaction
+    compact_disabled = False   # circuit breaker déclenché
+
+    # ── Task budget (task-budgets-2026-03-13) ────────────────────────────────
+    task_budget      = None    # budget total tokens pour la tâche en cours (None = illimité)
+    task_tokens_used = 0       # tokens consommés depuis le début de la tâche
 
     while True:
         # ── Indicateur contexte dans le prompt ───────────────────────────────
-        ctx_pct   = len(history) / blk_size if history else 0
+        ctx_pct   = _estimate_tokens(history) / blk_size if history else 0
         ctx_label = (
             WARN_C + f"[ctx {ctx_pct*100:.0f}%] " + R
             if ctx_pct >= CTX_WARNING_PCT
             else ""
         )
+        # Task budget label
+        if task_budget is not None:
+            tb_pct = task_tokens_used / task_budget
+            if tb_pct >= 0.8:
+                ctx_label += fg(255, 140, 0) + f"[task {tb_pct*100:.0f}%] " + R
         mode_parts = []
         if think_mode:
             mode_parts.append(THINK_C + "[think]" + R)
@@ -536,16 +566,51 @@ def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: i
                 print(CMD_C + "  → Interleaved thinking désactivé" + R)
             continue
 
+        # /redactthink — supprime les tokens thinking du contexte (redact-thinking-2026-02-12)
+        if prompt == "/redactthink":
+            redact_thinking = not redact_thinking
+            if redact_thinking:
+                print(THINK_C + "  → Redact thinking activé"
+                      + INFO_C + "  (tokens de réflexion exclus du contexte — fenêtre préservée)" + R)
+            else:
+                print(CMD_C + "  → Redact thinking désactivé" + R)
+            continue
+
+        # /taskbudget — budget total tokens sur la tâche (task-budgets-2026-03-13)
+        if prompt.startswith("/taskbudget"):
+            parts = prompt.split()
+            if len(parts) < 2 or parts[1] == "off":
+                task_budget      = None
+                task_tokens_used = 0
+                print(CMD_C + "  → Task budget désactivé" + R)
+            else:
+                try:
+                    task_budget      = int(parts[1])
+                    task_tokens_used = 0
+                    print(fg(255, 140, 0) + f"  → Task budget : {task_budget} tokens"
+                          + INFO_C + "  (réinitialisé)" + R)
+                except ValueError:
+                    print(ERR_C + "  usage : /taskbudget 2000   ou   /taskbudget off" + R)
+            continue
+
         # /ctx — afficher l'état du contexte
         if prompt == "/ctx":
-            pct    = len(history) / blk_size * 100
-            used   = len(history)
-            bar_l  = 30
-            filled = int(bar_l * pct / 100)
-            bar    = "█" * filled + "░" * (bar_l - filled)
-            color  = WARN_C if pct >= CTX_WARNING_PCT * 100 else CMD_C
-            print(color + f"  Contexte [{bar}] {pct:.1f}%  ({used}/{blk_size} chars)" + R)
-            print(INFO_C + f"  Warning à {CTX_WARNING_PCT*100:.0f}%  ·  Auto-compact à {CTX_COMPACT_PCT*100:.0f}%" + R)
+            est_tok = _estimate_tokens(history)
+            pct     = est_tok / blk_size * 100
+            bar_l   = 30
+            filled  = int(bar_l * min(pct, 100) / 100)
+            bar     = "█" * filled + "░" * (bar_l - filled)
+            color   = WARN_C if pct >= CTX_WARNING_PCT * 100 else CMD_C
+            print(color + f"  Contexte [{bar}] {pct:.1f}%  (~{est_tok}/{blk_size} tokens estimés)" + R)
+            print(INFO_C + f"  BYTES_PER_TOKEN=4  ·  Warning à {CTX_WARNING_PCT*100:.0f}%"
+                  + f"  ·  Auto-compact à {CTX_COMPACT_PCT*100:.0f}%"
+                  + (f"  ·  circuit breaker {compact_failures}/{MAX_COMPACT_FAILURES}" if compact_failures else "")
+                  + R)
+            if task_budget is not None:
+                tb_pct = task_tokens_used / task_budget * 100
+                tb_bar = "█" * int(bar_l * min(tb_pct,100)/100) + "░" * (bar_l - int(bar_l * min(tb_pct,100)/100))
+                tc = WARN_C if tb_pct >= 80 else CMD_C
+                print(tc + f"  Task budget [{tb_bar}] {tb_pct:.1f}%  ({task_tokens_used}/{task_budget} tokens)" + R)
             continue
 
         # /cache — infos session persistante
@@ -690,15 +755,45 @@ def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: i
         if session_past_kvs is not None:
             save_session(CACHE_PATH, session_past_kvs, session_token_ids, checkpoint_path)
 
-        # ── Mise à jour contexte string avec auto-compact ─────────────────────
-        new_content = prompt + response
+        # ── Mise à jour contexte string avec auto-compact + circuit breaker ─────
+        # Redact thinking : si activé, on n'ajoute que la réponse (pas le thinking)
+        # → les tokens de réflexion n'occupent pas la fenêtre de contexte
+        new_content = prompt + response   # thinking déjà exclu (stream_think retourne resp seul)
         history, compacted = update_context(history, new_content, blk_size)
+
         if compacted:
-            # L'auto-compact invalide le KV-cache (historique tronqué)
-            session_past_kvs  = None
-            session_token_ids = []
-            clear_session(CACHE_PATH)
-            print(INFO_C + "  [Auto-compact : contexte réduit à 50% · session cache réinitialisé]" + R)
+            if compact_disabled:
+                # Circuit breaker déclenché — on ignore la compaction
+                history = (history + new_content)[-(blk_size * BYTES_PER_TOKEN // 2):]
+                print(WARN_C + "  ⚠ Auto-compact désactivé (circuit breaker)" + R)
+            else:
+                compact_failures += 1
+                session_past_kvs  = None
+                session_token_ids = []
+                clear_session(CACHE_PATH)
+                msg = f"  [Auto-compact : contexte réduit à 50% · session cache réinitialisé]"
+                if compact_failures >= MAX_COMPACT_FAILURES:
+                    compact_disabled = True
+                    msg += f" — circuit breaker déclenché après {MAX_COMPACT_FAILURES} compactions"
+                print(INFO_C + msg + R)
+        else:
+            compact_failures = 0  # reset si pas de compaction ce tour
+
+        # Redact thinking : invalider le KV-cache si activé (think tokens hors contexte)
+        if think_mode and redact_thinking and session_past_kvs is not None:
+            session_past_kvs = None   # sera reconstruit proprement sans thinking au prochain tour
+
+        # ── Task budget : tracking tokens consommés (task-budgets-2026-03-13) ─
+        turn_tokens = len(encode(prompt + response))
+        if task_budget is not None:
+            task_tokens_used += turn_tokens
+            remaining = task_budget - task_tokens_used
+            if task_tokens_used >= task_budget:
+                print(fg(255, 80, 80) + f"  ✗ Task budget épuisé ({task_tokens_used}/{task_budget} tokens)"
+                      + INFO_C + "  — /taskbudget N pour redéfinir" + R)
+            elif remaining < task_budget * 0.20:
+                print(fg(255, 140, 0) + f"  ⚠ Task budget à {task_tokens_used/task_budget*100:.0f}%"
+                      + INFO_C + f"  ({remaining} tokens restants)" + R)
 
         turns.append(("user",  prompt))
         turns.append(("model", response))

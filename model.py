@@ -410,6 +410,39 @@ class nanoPOPIXA(nn.Module):
         diversity = len(set(bigrams)) / len(bigrams)
         return diversity < threshold
 
+    @staticmethod
+    def _has_diminishing_returns(
+        tokens: list,
+        window: int = 40,
+        n_checks: int = 3,
+        threshold: float = 0.28,
+    ) -> bool:
+        """
+        Vérifie si N fenêtres consécutives montrent toutes une diversité faible.
+        Fidèle à tokenBudget.ts : DIMINISHING_THRESHOLD sur 3 itérations consécutives.
+
+        Différence avec _is_repetitive :
+          _is_repetitive  → détecte UNE fenêtre répétitive (arrêt immédiat)
+          _has_diminishing_returns → requiert N fenêtres consécutives (plus conservateur)
+
+        Paramètres :
+          n_checks  : nombre de fenêtres consécutives à vérifier (défaut 3, comme Claude)
+          window    : taille de chaque fenêtre en tokens
+          threshold : seuil de diversité bigrammes (0.28 = 28%)
+        """
+        if len(tokens) < window * n_checks:
+            return False
+        for i in range(n_checks):
+            start = len(tokens) - window * (i + 1)
+            end   = len(tokens) - window * i if i > 0 else len(tokens)
+            w = tokens[start:end]
+            if len(w) < 2:
+                return False
+            bigrams = [(w[j], w[j + 1]) for j in range(len(w) - 1)]
+            if len(set(bigrams)) / len(bigrams) >= threshold:
+                return False  # une fenêtre diverse → pas encore diminishing
+        return True  # toutes les n_checks fenêtres sont répétitives
+
     # ── Génération standard ──────────────────────────────────────────────────
 
     @torch.no_grad()
