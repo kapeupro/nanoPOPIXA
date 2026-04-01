@@ -46,6 +46,7 @@ HELP = """
   collect SOURCE_DIR [--data_dir DIR] [--extensions .py,.js,…]
       → Assembler du code source local en corpus
 
+  update  → mettre à jour depuis GitHub (git pull + pip install)
   help  →  cette aide      exit  →  quitter
 
 Exemples :
@@ -55,6 +56,64 @@ Exemples :
   chat
   scrape --url https://fr.wikipedia.org/wiki/Python --max_pages 20
 """
+
+
+def cmd_update(args):
+    """Met à jour nanoPOPIXA depuis GitHub et réinstalle le package."""
+    import subprocess, sys, os
+
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+
+    print(INFO_C + "  Vérification de la mise à jour…" + R)
+
+    # Vérifier qu'on est dans un dépôt git
+    result = subprocess.run(["git", "rev-parse", "--git-dir"],
+                            cwd=repo_dir, capture_output=True)
+    if result.returncode != 0:
+        print(ERR_C + "  ✗ Dossier non reconnu comme dépôt git." + R)
+        print(INFO_C + "  Clone d'abord : git clone https://github.com/kapeupro/nanoPOPIXA" + R)
+        return
+
+    # Version actuelle
+    before = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                            cwd=repo_dir, capture_output=True, text=True).stdout.strip()
+
+    # git pull
+    print(INFO_C + "  git pull…" + R)
+    pull = subprocess.run(["git", "pull"], cwd=repo_dir, capture_output=True, text=True)
+    if pull.returncode != 0:
+        print(ERR_C + f"  ✗ git pull échoué :\n{pull.stderr}" + R)
+        return
+
+    after = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                           cwd=repo_dir, capture_output=True, text=True).stdout.strip()
+
+    if before == after:
+        print(CMD_C + "  ✓ Déjà à jour." + R + INFO_C + f"  ({after})" + R)
+        return
+
+    # Afficher le changelog
+    log = subprocess.run(
+        ["git", "log", "--oneline", f"{before}..{after}"],
+        cwd=repo_dir, capture_output=True, text=True
+    ).stdout.strip()
+    print(CMD_C + f"  ✓ Mis à jour {before} → {after}" + R)
+    if log:
+        print(INFO_C + "  Nouveautés :" + R)
+        for line in log.splitlines():
+            print(CMD_C + f"    {line}" + R)
+
+    # pip install -e .
+    print(INFO_C + "\n  Réinstallation du package…" + R)
+    pip = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-e", ".", "--quiet", "--no-deps"],
+        cwd=repo_dir, capture_output=True, text=True
+    )
+    if pip.returncode != 0:
+        print(ERR_C + f"  ✗ pip install échoué :\n{pip.stderr}" + R)
+        return
+
+    print(CMD_C + "  ✓ nanoPOPIXA mis à jour. Relance popixa chat pour profiter des nouveautés." + R)
 
 
 def cmd_chat(args):
@@ -195,6 +254,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_scr.add_argument("--max_pages", type=int, default=10)
     p_scr.add_argument("--output",    default="web_fr.txt")
 
+    # ── update ────────────────────────────────────────────────────────
+    sub.add_parser("update")
+
     # ── gen ───────────────────────────────────────────────────────────
     p_gen = sub.add_parser("gen")
     p_gen.add_argument("--checkpoint", default="out-nanopopixa/checkpoint.pt")
@@ -215,6 +277,7 @@ _DISPATCH = {
     "monitor": cmd_monitor,
     "scrape":  cmd_scrape,
     "gen":     cmd_gen,
+    "update":  cmd_update,
 }
 
 
