@@ -307,7 +307,7 @@ class nanoPOPIXA(nn.Module):
 
     # ── Forward ──────────────────────────────────────────────────────────────
 
-    def forward(self, idx, targets=None, past_kvs=None):
+    def forward(self, idx, targets=None, past_kvs=None, return_all_logits=False):
         """
         Mode entraînement (targets != None) :
             Retourne (logits, loss) — compatible train.py.
@@ -315,6 +315,10 @@ class nanoPOPIXA(nn.Module):
         Mode inférence (targets == None) :
             Retourne (logits, present_kvs) — utilisé par generate/generate_stream.
             logits : (B, 1, vocab_size) — seulement le dernier token.
+
+        return_all_logits=True :
+            Retourne (logits, present_kvs) avec logits (B, T, vocab_size).
+            Utilisé par speculative decoding pour vérifier tous les tokens draft en une passe.
         """
         B, T = idx.size()
         assert T <= self.config.block_size, f"Séquence trop longue ({T} > {self.config.block_size})"
@@ -339,7 +343,11 @@ class nanoPOPIXA(nn.Module):
             )
             return logits, loss
 
-        # Inférence — seulement le dernier token, on retourne le cache
+        if return_all_logits:
+            # Speculative decoding — tous les logits (B, T, vocab_size)
+            return self.lm_head(x), present_kvs
+
+        # Inférence standard — seulement le dernier token, on retourne le cache
         logits = self.lm_head(x[:, [-1], :])
         return logits, present_kvs
 
@@ -740,11 +748,12 @@ class nanoPOPIXA(nn.Module):
                 draft_idx = torch.cat((draft_idx, d_next), dim=1)
 
             # ── Phase Verify : une passe sur tous les tokens draft ────────────
-            # On nourrit les N tokens draft d'un coup au verifier.
+            # return_all_logits=True → (1, n, vocab_size) pour vérifier chaque position
             draft_tensor = torch.tensor(
                 draft_tokens, dtype=torch.long, device=idx.device
             ).unsqueeze(0)                               # (1, n)
-            v_logits, v_kvs = self(draft_tensor, past_kvs=past_kvs)
+            v_logits, v_kvs = self(draft_tensor, past_kvs=past_kvs,
+                                   return_all_logits=True)
             # v_logits : (1, n, vocab_size) — logits pour chaque position
 
             # ── Accept/Reject ─────────────────────────────────────────────────
