@@ -97,6 +97,8 @@ popixa chat
 
 Le modèle `nano` suffit pour tester toutes les fonctionnalités. Pour une meilleure qualité de génération, utilise `--size small` (~10M params, ~3× plus long à entraîner).
 
+> **Apple Silicon (M1/M2/M3/M4)** : `--size medium` dépasse les 20 GB de mémoire MPS et plantera. Reste sur `nano` ou `small`.
+
 ---
 
 ## CLI complète

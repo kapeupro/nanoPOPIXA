@@ -77,6 +77,16 @@ else:
 
 print(f"🚀 Device détecté : {device.upper()}")
 
+# Guard OOM — medium sur MPS dépasse facilement les 20 GB
+# (85M params × batch 8 × block 1024 × bfloat16 ≈ 20+ GB activations)
+if device == "mps" and args.size == "medium":
+    print("⚠️  Attention : --size medium peut provoquer un OOM sur Apple Silicon (>20 GB MPS).")
+    print("   Recommandation : utilise --size small (~10M params, ~3 GB) ou --size nano (~2M params).")
+    print("   Tu peux aussi réduire le batch en éditant batch_size dans train.py.")
+    print("   Pour forcer quand même : relance avec PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 popixa train ...")
+    import sys as _sys
+    _sys.exit(1)
+
 
 # ─────────────────────────────────────────
 # LR Scheduling — cosine avec warmup linéaire
