@@ -28,8 +28,8 @@ HELP = """
       → Préparer un dataset (shakespeare, linux, hugo, javascript…)
         Défaut : tiktoken BPE | --char pour tokenisation caractère
 
-  train   [--data_dir DIR] [--size nano|small|medium] [--resume]
-      → Entraîner le modèle  (nano ~2M, small ~10M, medium ~85M)
+  train   [--data_dir DIR] [--size nano|small|medium] [--resume] [--longrope]
+      → Entraîner le modèle  (nano ~0.9M, small ~10M, medium ~85M params hors embeddings)
 
   chat    [--checkpoint PATH] [--temp FLOAT] [--tokens INT]
       → Chat interactif avec le modèle
@@ -37,8 +37,9 @@ HELP = """
   monitor [--log train.log] [--refresh 1.0]
       → Dashboard live de la courbe de loss
 
-  gen     [--prompt TEXTE] [--tokens INT] [--temp FLOAT]
-      → Générer du texte (mode non-interactif)
+  gen     [--prompt TEXTE] [--tokens INT] [--temp FLOAT] [--top_p FLOAT]
+          [--json] [--schema FICHIER|JSON]
+      → Générer du texte (mode non-interactif) — --json/--schema : sortie JSON garantie
 
   scrape  --url URL [--max_pages N] [--output fichier.txt]
       → Crawler web → corpus d'entraînement
@@ -54,8 +55,17 @@ Exemples :
   train --data_dir data/ --size small
   train --data_dir data/ --resume
   chat
+  gen --prompt '{"nom": ' --schema schema.json
   scrape --url https://fr.wikipedia.org/wiki/Python --max_pages 20
 """
+
+
+def _positive_float(value: str) -> float:
+    """Type argparse : flottant strictement positif (ex. repetition penalty)."""
+    f = float(value)
+    if f <= 0:
+        raise argparse.ArgumentTypeError(f"doit être > 0 (reçu {value})")
+    return f
 
 
 def cmd_update(args):
@@ -143,6 +153,12 @@ def cmd_train(args):
         _sys.argv += ["--input", args.input]
     if args.resume:
         _sys.argv += ["--resume"]
+    if args.longrope:
+        _sys.argv += ["--longrope"]
+    if args.max_iters is not None:
+        _sys.argv += ["--max_iters", str(args.max_iters)]
+    if args.batch_size is not None:
+        _sys.argv += ["--batch_size", str(args.batch_size)]
     train_path = os.path.join(os.path.dirname(__file__), "train.py")
     runpy.run_path(train_path, run_name="__main__")
 
@@ -153,7 +169,14 @@ def cmd_prep(args):
 
 
 def cmd_scrape(args):
-    from scrape import scrape_recursive
+    if not args.url:
+        print(ERR_C + "  ✗ usage : scrape --url URL [--max_pages N] [--output fichier.txt]" + R)
+        return
+    try:
+        from scrape import scrape_recursive
+    except ImportError as e:
+        print(ERR_C + f"  ✗ Module manquant ({e.name}) : pip install requests beautifulsoup4" + R)
+        return
     scrape_recursive(args.url, args.max_pages, args.output)
 
 
@@ -169,40 +192,48 @@ def cmd_monitor(args):
 
 
 def cmd_gen(args):
+    import contextlib
     import torch
-    from model import nanoPOPIXA
+    from chat import load_model, load_token_bytes
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    ckpt   = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    model  = nanoPOPIXA(ckpt["config"]).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.train(False)
-
-    if ckpt.get("tokenizer") == "tiktoken_gpt2":
-        import tiktoken as _tt
-        enc    = _tt.get_encoding("gpt2")
-        encode = lambda s: enc.encode_ordinary(s)
-        decode = lambda l: enc.decode(l)
-    elif "vocab" in ckpt:
-        stoi   = ckpt["vocab"]["stoi"]
-        itos   = ckpt["vocab"]["itos"]
-        encode = lambda s: [stoi.get(c, 0) for c in s]
-        decode = lambda l: "".join([itos[i] for i in l])
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
     else:
-        print("Erreur : checkpoint sans vocabulaire (réentraîne le modèle)")
+        device = "cpu"
+
+    # Logs de chargement sur stderr : stdout ne contient que le texte généré
+    # (exploitable tel quel, ex. popixa gen --json > sortie.json)
+    with contextlib.redirect_stdout(sys.stderr):
+        model, encode, decode, ckpt = load_model(args.checkpoint, device)
+
+    ids = encode(args.prompt) if args.prompt else []
+    ctx = torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)  # vide → amorce token 0
+
+    if args.json or args.schema:
+        import structured
+        try:
+            schema = structured.load_schema(args.schema) if args.schema else None
+            constraint = structured.json_constraint(
+                load_token_bytes(ckpt, model.config.vocab_size), schema
+            )
+        except (ValueError, OSError) as e:
+            print(ERR_C + f"  ✗ Structured outputs : {e}" + R, file=sys.stderr)
+            return
+        tokens = list(model.generate_structured(
+            ctx, constraint, max_new_tokens=args.tokens, temperature=args.temp,
+            top_k=args.top_k, top_p=args.top_p, repetition_penalty=args.penalty,
+        ))
+        print(decode(tokens))
+        if not constraint.is_complete():
+            print(ERR_C + "  ⚠ JSON incomplet — augmente --tokens" + R, file=sys.stderr)
         return
 
-    if args.prompt:
-        ctx = torch.tensor(encode(args.prompt), dtype=torch.long, device=device).unsqueeze(0)
-    else:
-        ctx = torch.zeros((1, 1), dtype=torch.long, device=device)
-
-    with torch.no_grad():
-        out = model.generate(ctx, max_new_tokens=args.tokens, temperature=args.temp,
-                             top_k=args.top_k, repetition_penalty=args.penalty)
-
-    text = decode(out[0].tolist())
-    print(text[len(args.prompt):] if args.prompt else text)
+    tokens = list(model.generate_stream(
+        ctx, args.tokens, args.temp, args.top_k, args.penalty, args.top_p,
+    ))
+    print(decode(tokens))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -217,7 +248,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--tokens",     type=int,   default=200)
     p_chat.add_argument("--top_k",      type=int,   default=40)
     p_chat.add_argument("--top_p",      type=float, default=None)
-    p_chat.add_argument("--penalty",    type=float, default=1.0)
+    p_chat.add_argument("--penalty",    type=_positive_float, default=1.0)
     p_chat.add_argument("--effort",     default=None,
                         choices=["low", "medium", "high", "max"])
 
@@ -228,6 +259,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--size",     default="medium",
                          choices=["nano", "small", "medium"])
     p_train.add_argument("--resume",   action="store_true")
+    p_train.add_argument("--longrope", action="store_true")
+    p_train.add_argument("--max_iters",  type=int, default=None)
+    p_train.add_argument("--batch_size", type=int, default=None)
 
     # ── prep ──────────────────────────────────────────────────────────
     p_prep = sub.add_parser("prep")
@@ -264,7 +298,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--temp",       type=float, default=0.8)
     p_gen.add_argument("--tokens",     type=int,   default=300)
     p_gen.add_argument("--top_k",      type=int,   default=40)
-    p_gen.add_argument("--penalty",    type=float, default=1.0)
+    p_gen.add_argument("--top_p",      type=float, default=None)
+    p_gen.add_argument("--penalty",    type=_positive_float, default=1.0)
+    p_gen.add_argument("--json",       action="store_true",
+                       help="Structured outputs : sortie JSON valide garantie")
+    p_gen.add_argument("--schema",     default=None,
+                       help="Schéma JSON (fichier .json ou JSON inline) — implique --json")
 
     return parser
 
@@ -344,7 +383,11 @@ def run_shell() -> None:
                   + CMD_C + "help" + INFO_C + " pour la liste." + R)
             continue
 
-        _run_command(tokens)
+        try:
+            _run_command(tokens)
+        except SystemExit:
+            # Une commande qui abandonne (ex. chat sans checkpoint) ne ferme pas le shell
+            pass
 
 
 # ─── Point d'entrée ───────────────────────────────────────────────────────────

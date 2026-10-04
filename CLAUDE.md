@@ -15,17 +15,21 @@ Token Embedding (wte, weight-tied avec lm_head)
 - **RMSNorm** — pas de biais, `eps=1e-6`
 - **RoPE** — `head_dim = n_embd // n_head`, `rope_base=10000`
 - **SwiGLU** — `hidden = round_up(8/3 * n_embd, 64)`, pas de biais
-- **KV-Cache** — `past_kvs: list[tuple[Tensor, Tensor]]` par couche
-- **Flash Attention** — `F.scaled_dot_product_attention` si PyTorch ≥ 2.0
+- **KV-Cache** — `past_kvs: list[tuple[Tensor, Tensor]]` par couche ; les générateurs renvoient un
+  `KVCache` (sous-classe de `list`) dont `token_ids` = ids exacts couverts par le cache
+- **Flash Attention** — `F.scaled_dot_product_attention` si PyTorch ≥ 2.0 ; prefill par morceaux
+  sur un cache existant → masque causal **décalé** (`tril(diagonal=past_len)`)
 
 ## Fichiers clés
 
 | Fichier | Rôle |
 |---|---|
-| `model.py` | Architecture complète + génération (generate, generate_stream, thinking) |
+| `model.py` | Architecture complète + génération (generate, generate_stream, thinking, speculative, structured) |
 | `train.py` | Boucle d'entraînement, LR scheduling cosine+warmup |
 | `chat.py` | CLI interactif, effort levels, thinking blocks, KV-cache persistant |
-| `session_cache.py` | Sérialisation/restauration du KV-cache entre sessions |
+| `session_cache.py` | Sérialisation/restauration du KV-cache entre sessions (format v3 : ids exacts + historique) |
+| `structured.py` | Structured outputs : matcher JSON Schema octet par octet, masques de tokens, complétion la plus courte |
+| `tests/` | Suite pytest (modèle, session, chat, structured) — lancée par la CI |
 | `data_prep.py` | Téléchargement + tokenisation (tiktoken BPE ou char-level) |
 | `popixa_cli.py` | Point d'entrée `popixa` avec shell interactif |
 
@@ -37,7 +41,18 @@ Token Embedding (wte, weight-tied avec lm_head)
   - Avec `targets` → retourne `(logits, loss)` pour l'entraînement
   - Sans `targets` → retourne `(logits, present_kvs)` pour l'inférence
 - Les checkpoints v1 (LayerNorm + wpe + GELU) sont incompatibles avec v2 → réentraîner
+  (`checkpoint_v1_error(state_dict)` donne un message propre dans chat / gen / train --resume)
 - `generate_stream` accepte `initial_past_kvs` et `cache_ref` pour la persistance de session
+- Tous les générateurs passent par `_Decoder` (model.py) — invariants :
+  - `dec.idx` = contexte connu (ids du cache initial s'ils sont connus + entrée + tokens générés)
+  - `dec.past_kvs` couvre `dec.idx` sauf les `pending` derniers tokens
+  - au-delà de `block_size` : prefill glissant sur les 75% derniers tokens (jamais de crash)
+  - `cache_ref` est rempli dans un `finally` → aussi en cas d'interruption / `gen.close()`,
+    et le cache final couvre l'entrée + TOUS les tokens yieldés
+- `_apply_sampling` : penalty → logit_bias → masque → temperature (≤ 0 = greedy) → top-k (≤ 0 = off) → top-p ;
+  ne modifie jamais les logits de l'appelant
+- Politiques d'arrêt : `stop_policy="repetitive" | "diminishing" | "off"` (`_should_stop`)
+- Tests : `python -m pytest -q tests` (rapides, CPU, modèles minuscules)
 
 ## Patterns extraits par reverse engineering (claude-code v2.1.88)
 
@@ -99,15 +114,36 @@ EFFORT_PRESETS = {
 - Fast mode : états cooldown (rate_limit | overloaded), `PREFETCH_MIN_INTERVAL_MS = 30_000`
 - Dans nanoPOPIXA : fast mode = speculative decoding, pas de cooldown API
 
+## Implémenté — vague 3
+
+- **Structured outputs** (`structured-outputs-2025-12-15`) — `structured.py` + `generate_structured`
+  - Matcher octet par octet (états immuables/hashables, frozenset de piles) → masque de tokens
+    via un trie du vocabulaire (mis en cache par état)
+  - Échantillonnage par rejet : tirage normal, masque seulement si le token viole la grammaire
+  - `force_complete` : ferme le JSON avec `completion_tokens()` quand le budget s'épuise
+  - Sous-ensemble JSON Schema : types (+ unions), properties/required (ordre de déclaration,
+    pas de propriétés additionnelles), enum/const, items/prefixItems/minItems/maxItems,
+    minLength/maxLength, anyOf/oneOf, allOf à 1 élément, `$ref` locaux récursifs
+  - Mots-clés non appliqués (pattern, format, minimum…) → `ignored_keywords`, signalés dans le chat
+  - CLI : `/json [schéma]` dans le chat, `popixa gen --json / --schema`
+- **`_has_diminishing_returns`** branché : `think_stop_policy="diminishing"` (phase thinking),
+  `/stop repetitive|diminishing|off` pour les réponses
+- **Speculative decoding corrigé** — verify en une passe avec masque décalé, cache tronqué aux
+  drafts acceptés, drafts n-grammes (prompt lookup) par défaut ; greedy spéculatif == greedy normal
+
 ## Ce qui reste à implémenter (backlog)
 
-1. **Structured outputs** — contraintes logits pour JSON valide (`structured-outputs-2025-12-15`)
-   logit_bias déjà dans `_apply_sampling`, il manque le parser de schéma JSON
-2. **`_has_diminishing_returns`** dans les générateurs — actuellement seul `_is_repetitive` est appelé
+1. **Structured outputs + thinking** — phase de réflexion libre puis réponse JSON contrainte
+2. **Mots-clés JSON Schema restants** — `pattern` (regex → automate), `minimum`/`maximum`, `format`
+3. **LongRoPE réel** — étendre la table RoPE au-delà de `block_size` (aujourd'hui `--longrope`
+   ne change que `rope_base`, la fenêtre reste `block_size`)
 
 ## Tests rapides
 
 ```bash
+# Suite complète (≈ 30 s sur CPU)
+python -m pytest -q tests
+
 # Vérifier le modèle
 python3 -c "from model import nanoPOPIXA, POPIXAConfig; m = nanoPOPIXA(POPIXAConfig(vocab_size=100)); import torch; print(m(torch.zeros(1,10,dtype=torch.long), torch.zeros(1,10,dtype=torch.long)))"
 

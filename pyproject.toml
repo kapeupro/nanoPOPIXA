@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanopopixa"
-version = "2.0.0"
+version = "2.1.0"
 description = "nanoPOPIXA — Un LLM minimaliste from scratch"
 authors = [{ name = "Dimitri" }]
 license = { text = "MIT" }
@@ -15,6 +15,10 @@ dependencies = [
     "numpy",
     "tiktoken",
 ]
+
+[project.optional-dependencies]
+scrape = ["requests", "beautifulsoup4"]
+dev    = ["pytest"]
 
 [project.scripts]
 popixa = "popixa_cli:main"
@@ -30,4 +34,5 @@ py-modules = [
     "splash",
     "monitor",
     "session_cache",
+    "structured",
 ]
