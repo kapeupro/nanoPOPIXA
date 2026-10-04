@@ -49,8 +49,10 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
-        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
-        return x * rms * self.weight
+        # Calcul en float32 : en fp16, x² déborde dès |x| > 256 → vecteur entier mis à 0
+        xf  = x.float()
+        rms = xf.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
+        return (xf * rms).to(x.dtype) * self.weight
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,7 +98,8 @@ def _rotate_half(x):
 
 
 def apply_rotary_emb(q, k, cos, sin):
-    """Applique RoPE sur Q et K."""
+    """Applique RoPE sur Q et K (cos/sin castés au dtype de Q → compatible bf16/fp16)."""
+    cos, sin = cos.to(q.dtype), sin.to(q.dtype)
     q = (q * cos) + (_rotate_half(q) * sin)
     k = (k * cos) + (_rotate_half(k) * sin)
     return q, k
@@ -117,6 +120,7 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
+        assert (config.n_embd // config.n_head) % 2 == 0, "RoPE requiert un head_dim pair"
 
         self.n_head  = config.n_head
         self.n_embd  = config.n_embd
@@ -167,21 +171,30 @@ class CausalSelfAttention(nn.Module):
             v = torch.cat([past_kv[1], v], dim=2)
         present_kv = (k, v)
 
-        kv_len    = k.size(2)
-        is_causal = (T == kv_len)  # True au prefill, False en décodage
+        kv_len   = k.size(2)
+        past_len = kv_len - T
+        # Trois cas :
+        #   - prefill sans cache (past_len == 0)  → masque causal standard
+        #   - décodage d'un token (T == 1)        → le token voit tout le cache, pas de masque
+        #   - prefill par morceaux sur un cache   → masque causal DÉCALÉ : la requête i
+        #     (position absolue past_len+i) voit les clés 0..past_len+i
+        #     (session restaurée, vérification du speculative decoding)
 
         if self.flash:
+            attn_mask = None
+            if T > 1 and past_len > 0:
+                attn_mask = torch.ones(T, kv_len, dtype=torch.bool, device=x.device).tril(diagonal=past_len)
             y = F.scaled_dot_product_attention(
                 q, k, v,
-                attn_mask=None,
+                attn_mask=attn_mask,
                 dropout_p=self.dropout if self.training else 0.0,
-                is_causal=is_causal,
+                is_causal=(T > 1 and past_len == 0),
             )
         else:
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-            if is_causal:
+            if T > 1:
                 att = att.masked_fill(
-                    self.bias[:, :, :T, :kv_len] == 0, float("-inf")
+                    self.bias[:, :, past_len:kv_len, :kv_len] == 0, float("-inf")
                 )
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
@@ -241,6 +254,174 @@ class Block(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# KV-Cache annoté + décodeur incrémental
+# ─────────────────────────────────────────────────────────────────────────────
+
+def checkpoint_v1_error(state_dict) -> str:
+    """
+    Détecte un checkpoint v1 (nanoGPT-style : wpe + LayerNorm + GELU), incompatible v2.
+    Retourne un message d'erreur lisible, ou None si le checkpoint est bien v2.
+    """
+    keys = set(state_dict.keys())
+    v1_markers = ("transformer.wpe.weight", "transformer.h.0.mlp.c_fc.weight", "transformer.ln_f.bias")
+    if any(k in keys for k in v1_markers) or "transformer.h.0.mlp.gate.weight" not in keys:
+        return ("Checkpoint v1 (LayerNorm + wpe + GELU) incompatible avec l'architecture v2 "
+                "(RMSNorm · SwiGLU · RoPE) — réentraîne le modèle : popixa train --data_dir data/")
+    return None
+
+
+def _cache_len(past_kvs) -> int:
+    """Nombre de positions déjà présentes dans un KV-cache (0 si absent)."""
+    return past_kvs[0][0].size(2) if past_kvs else 0
+
+
+class KVCache(list):
+    """
+    KV-cache d'inférence : liste de (K, V) par couche, de forme (B, n_head, T, head_dim).
+
+    Sous-classe de `list` → reste compatible avec tout code qui attend une simple
+    liste de tuples (forward(past_kvs=...), save_session, CI).
+
+    token_ids : ids exacts des tokens couverts par le cache (ligne 0 du batch), dans
+                l'ordre — ou None s'ils sont inconnus (cache fourni sans ids).
+                Invariant : len(token_ids) == seq_len.
+    """
+
+    def __init__(self, kvs=(), token_ids=None):
+        super().__init__(kvs)
+        self.token_ids = token_ids
+
+    @property
+    def seq_len(self) -> int:
+        return _cache_len(self)
+
+
+class _Decoder:
+    """
+    Décodage incrémental avec KV-cache — logique commune à tous les générateurs.
+
+    Invariants :
+      - idx      : contexte connu (B, T) — ids du cache initial (si connus) + entrée
+                   + tokens générés
+      - past_kvs : KV-cache couvrant idx, sauf les `pending` derniers tokens
+                   (générés mais pas encore passés dans le modèle)
+      - ctx_ids  : ids couverts par le cache (None si le préfixe est inconnu)
+
+    Fenêtre glissante : quand le cache atteint block_size, on refait un prefill sur les
+    `keep` derniers tokens connus (RoPE repart de 0) au lieu de planter.
+    """
+
+    def __init__(self, model, idx, initial_past_kvs=None, slide_keep: float = 0.75):
+        self.model      = model
+        self.block_size = model.config.block_size
+        self.keep       = max(1, int(self.block_size * slide_keep))
+        self.pending    = 0
+        self.past_kvs   = None
+        self.ctx_ids    = None
+
+        if idx.size(1) == 0:
+            known = getattr(initial_past_kvs, "token_ids", None)
+            if known:
+                # Entrée vide sur un cache connu : on rejoue le dernier token du cache
+                # pour obtenir les logits du token suivant
+                n = len(known) - 1
+                initial_past_kvs = KVCache(
+                    [(k[:, :, :n], v[:, :, :n]) for k, v in initial_past_kvs], list(known[:n])
+                )
+                idx = torch.tensor([[known[-1]]], dtype=torch.long, device=idx.device)
+            else:
+                # Génération libre : token 0 comme amorce (comme train.py)
+                initial_past_kvs = None
+                idx = torch.zeros((idx.size(0), 1), dtype=torch.long, device=idx.device)
+
+        self.logits = self._prefill(idx, initial_past_kvs)
+
+    @property
+    def cache_len(self) -> int:
+        return _cache_len(self.past_kvs)
+
+    def _prefill(self, idx, past_kvs):
+        # Ids du cache initial connus (KVCache) → ils font partie du contexte connu :
+        # la fenêtre glissante, la repetition penalty et les drafts n-grammes les voient.
+        prefix = getattr(past_kvs, "token_ids", None) if past_kvs is not None else None
+        if prefix is not None and (idx.size(0) != 1 or len(prefix) != _cache_len(past_kvs)):
+            prefix = None
+        if prefix:
+            pre = torch.tensor([list(prefix)], dtype=torch.long, device=idx.device)
+            self.idx = torch.cat((pre, idx), dim=1)
+        else:
+            self.idx = idx
+
+        if past_kvs is not None and _cache_len(past_kvs) + idx.size(1) <= self.block_size:
+            logits, self.past_kvs = self.model(idx, past_kvs=past_kvs)
+            self.ctx_ids = self.idx[0].tolist() if prefix is not None else None
+            return logits
+
+        # Pas de cache, ou cache + entrée > block_size → prefill sur le contexte connu,
+        # tronqué aux block_size derniers tokens (ou `keep` en cas de débordement, pour
+        # laisser de la place à la génération)
+        full = self.idx
+        ctx  = full[:, -self.block_size:] if full.size(1) <= self.block_size else full[:, -self.keep:]
+        logits, self.past_kvs = self.model(ctx)
+        self.ctx_ids = ctx[0].tolist()
+        return logits
+
+    def push(self, tok) -> None:
+        """Ajoute un token (int ou tenseur (B, 1)) au contexte, en attente d'être passé au modèle."""
+        if not torch.is_tensor(tok):
+            tok = torch.full((self.idx.size(0), 1), int(tok), dtype=torch.long, device=self.idx.device)
+        self.idx = torch.cat((self.idx, tok), dim=1)
+        self.pending += 1
+
+    def advance(self):
+        """Passe les tokens en attente dans le modèle → logits du prochain token."""
+        if self.pending == 0:
+            return self.logits
+        if self.cache_len + self.pending > self.block_size:
+            # Fenêtre pleine → prefill glissant sur les derniers tokens connus
+            ctx = self.idx[:, -self.keep:]
+            self.logits, self.past_kvs = self.model(ctx)
+            self.ctx_ids = ctx[0].tolist()
+        else:
+            new = self.idx[:, -self.pending:]
+            self.logits, self.past_kvs = self.model(new, past_kvs=self.past_kvs)
+            if self.ctx_ids is not None:
+                self.ctx_ids.extend(new[0].tolist())
+        self.pending = 0
+        return self.logits
+
+    def commit(self, base: int, kvs, drafts: list, n_accepted: int, next_tok: int) -> None:
+        """
+        Speculative decoding : garde dans le cache vérifié `kvs` les `n_accepted` premiers
+        drafts (positions base..base+n_accepted), puis ajoute `next_tok` (en attente).
+        """
+        n = base + n_accepted
+        self.past_kvs = [(k[:, :, :n], v[:, :, :n]) for k, v in kvs]
+        if n_accepted:
+            acc = torch.tensor([drafts[:n_accepted]], dtype=torch.long, device=self.idx.device)
+            self.idx = torch.cat((self.idx, acc), dim=1)
+            if self.ctx_ids is not None:
+                self.ctx_ids.extend(drafts[:n_accepted])
+        self.push(next_tok)
+
+    def kv_cache(self) -> KVCache:
+        """KV-cache final couvrant TOUT le contexte (les tokens en attente sont d'abord passés)."""
+        self.advance()
+        return KVCache(self.past_kvs, list(self.ctx_ids) if self.ctx_ids is not None else None)
+
+
+def _store_cache(dec, cache_ref) -> None:
+    """Remplit cache_ref avec le KV-cache final — y compris si le générateur est interrompu."""
+    if cache_ref is None or dec is None:
+        return
+    cache_ref.clear()
+    try:
+        cache_ref.append(dec.kv_cache())
+    except Exception:
+        pass  # cache inutilisable → cache_ref reste vide, l'appelant reconstruit le contexte
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # nanoPOPIXA v2
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -287,11 +468,16 @@ class nanoPOPIXA(nn.Module):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
 
         flash = "Flash Attention ✓" if hasattr(F, "scaled_dot_product_attention") else "Attention manuelle"
-        print(f"nanoPOPIXA v2 — {self.get_num_params()/1e6:.2f}M params | RMSNorm · SwiGLU · RoPE | {flash}")
+        print(f"nanoPOPIXA v2 — {self.get_num_params()/1e6:.2f}M params hors embeddings "
+              f"({self.get_num_params(False)/1e6:.2f}M au total) | RMSNorm · SwiGLU · RoPE | {flash}")
 
     # ── Utilitaires ──────────────────────────────────────────────────────────
 
     def get_num_params(self, non_embedding: bool = True) -> int:
+        """
+        Nombre de paramètres. non_embedding=True exclut la matrice wte (partagée avec
+        lm_head) — convention des lois d'échelle ; non_embedding=False → total réel.
+        """
         n = sum(p.numel() for p in self.parameters())
         if non_embedding:
             n -= self.transformer.wte.weight.numel()
@@ -321,13 +507,17 @@ class nanoPOPIXA(nn.Module):
             Utilisé par speculative decoding pour vérifier tous les tokens draft en une passe.
         """
         B, T = idx.size()
-        assert T <= self.config.block_size, f"Séquence trop longue ({T} > {self.config.block_size})"
+        past_len = _cache_len(past_kvs)
+        assert T > 0, "Séquence vide"
+        assert past_len + T <= self.config.block_size, (
+            f"Séquence trop longue ({past_len} en cache + {T} > block_size {self.config.block_size})"
+        )
 
         x = self.transformer.drop(self.transformer.wte(idx))
 
         present_kvs = []
         for i, block in enumerate(self.transformer.h):
-            past_kv = past_kvs[i] if past_kvs is not None else None
+            past_kv = past_kvs[i] if past_kvs else None
             x, present_kv = block(x, self.rotary_emb, past_kv=past_kv)
             present_kvs.append(present_kv)
 
@@ -354,37 +544,51 @@ class nanoPOPIXA(nn.Module):
     # ── Sampling ─────────────────────────────────────────────────────────────
 
     def _apply_sampling(self, logits, temperature, top_k, top_p, repetition_penalty, idx,
-                        logit_bias=None):
+                        logit_bias=None, mask=None):
         """
-        Applique dans l'ordre :
-          1. Temperature scaling
-          2. Repetition penalty
-          3. Top-k
-          4. Top-p (nucleus sampling)
-        Retourne les probabilités finales.
+        Transforme les logits du dernier token en distribution de probabilités, dans l'ordre :
+          1. Repetition penalty — divise si logit > 0, multiplie si logit ≤ 0
+          2. Logit bias         — forçage / interdiction de tokens {id: biais}
+          3. Masque             — tokens autorisés par une grammaire (structured outputs)
+          4. Temperature        — temperature ≤ 0 → greedy (distribution one-hot sur l'argmax)
+          5. Top-k
+          6. Top-p (nucleus sampling)
+        Ne modifie jamais le tenseur `logits` de l'appelant. Retourne (B, vocab_size).
         """
-        logits = logits[:, -1, :] / temperature  # (B, vocab_size)
+        if repetition_penalty is None or repetition_penalty <= 0:
+            raise ValueError(f"repetition_penalty doit être > 0 (reçu {repetition_penalty})")
+        logits = logits[:, -1, :].float().clone()  # (B, vocab_size)
 
-        # Repetition penalty — pénalise les tokens déjà générés
-        if repetition_penalty != 1.0:
-            for token_id in set(idx[0].tolist()):
-                if logits[0, token_id] > 0:
-                    logits[0, token_id] /= repetition_penalty
-                else:
-                    logits[0, token_id] *= repetition_penalty
+        # Repetition penalty — pénalise les tokens déjà présents dans le contexte (par ligne)
+        if repetition_penalty != 1.0 and idx is not None and idx.numel() > 0:
+            score = torch.gather(logits, 1, idx)
+            score = torch.where(score > 0, score / repetition_penalty, score * repetition_penalty)
+            logits.scatter_(1, idx, score)
+
+        # Logit bias — appliqué AVANT top-k pour pouvoir forcer un token hors du top-k
+        if logit_bias:
+            ids = [t for t in logit_bias if 0 <= t < logits.size(-1)]
+            if ids:
+                bias = torch.tensor([float(logit_bias[t]) for t in ids], device=logits.device)
+                logits[:, ids] += bias
+
+        # Masque grammatical — les tokens interdits ne peuvent jamais être tirés
+        if mask is not None:
+            logits = logits.masked_fill(~mask.to(logits.device), float("-inf"))
+
+        # Greedy — temperature ≤ 0 (évite la division par zéro)
+        if temperature is None or temperature <= 0:
+            probs = torch.zeros_like(logits)
+            return probs.scatter_(1, logits.argmax(dim=-1, keepdim=True), 1.0)
+
+        logits = logits / temperature
 
         # Top-k — ne garde que les k meilleurs logits
-        if top_k is not None:
-            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+        if top_k is not None and 0 < top_k < logits.size(-1):
+            v, _ = torch.topk(logits, top_k)
             logits[logits < v[:, [-1]]] = float("-inf")
 
         # Top-p — nucleus sampling : garde le noyau minimal qui couvre p% de la proba
-        # Logit bias — forçage de tokens (structured outputs, JSON mode)
-        if logit_bias is not None:
-            for token_id, bias in logit_bias.items():
-                if 0 <= token_id < logits.size(-1):
-                    logits[0, token_id] += bias
-
         if top_p is not None and top_p < 1.0:
             sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
             cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
@@ -396,8 +600,6 @@ class nanoPOPIXA(nn.Module):
             logits = torch.zeros_like(logits).scatter_(1, sorted_indices, sorted_logits)
 
         return F.softmax(logits, dim=-1)
-
-    # ── Génération ───────────────────────────────────────────────────────────
 
     # ── Diminishing returns ──────────────────────────────────────────────────
 
@@ -451,42 +653,82 @@ class nanoPOPIXA(nn.Module):
                 return False  # une fenêtre diverse → pas encore diminishing
         return True  # toutes les n_checks fenêtres sont répétitives
 
+    # Politiques d'arrêt anticipé :
+    #   "repetitive"  → _is_repetitive          (1 fenêtre — arrêt immédiat)
+    #   "diminishing" → _has_diminishing_returns (3 fenêtres consécutives — conservateur)
+    #   None / "off"  → jamais
+    STOP_POLICIES = ("repetitive", "diminishing", "off")
+
+    @staticmethod
+    def _resolve_stop_policy(stop_policy=None, stop_on_repetition: bool = False):
+        """Normalise la politique d'arrêt (compat : stop_on_repetition=True → 'repetitive')."""
+        if stop_policy is None:
+            return "repetitive" if stop_on_repetition else None
+        if stop_policy == "off":
+            return None
+        if stop_policy not in ("repetitive", "diminishing"):
+            raise ValueError(f"stop_policy inconnue : {stop_policy!r} (repetitive|diminishing|off)")
+        return stop_policy
+
+    @classmethod
+    def _should_stop(cls, tokens: list, stop_policy) -> bool:
+        if stop_policy == "repetitive":
+            return cls._is_repetitive(tokens)
+        if stop_policy == "diminishing":
+            return cls._has_diminishing_returns(tokens)
+        return False
+
+    # ── Boucle de décodage commune ───────────────────────────────────────────
+
+    def _sample_stream(self, dec, n_tokens, temperature, top_k, top_p, repetition_penalty,
+                       stop_policy=None, logit_bias=None, history=None):
+        """
+        Échantillonne jusqu'à n_tokens tokens via le décodeur `dec`.
+        Yield le tenseur (B, 1) de chaque token. S'arrête si la politique d'arrêt se
+        déclenche (le token déclencheur est écarté : ni yieldé, ni ajouté au contexte).
+        history : liste partagée des tokens déjà émis (pour la politique d'arrêt).
+        """
+        generated = [] if history is None else history
+        for _ in range(max(0, n_tokens)):
+            logits   = dec.advance()
+            probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty,
+                                            dec.idx, logit_bias=logit_bias)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            generated.append(idx_next[0, 0].item())
+            if self._should_stop(generated, stop_policy):
+                return  # Diminishing returns détecté → fin de la phase
+            dec.push(idx_next)
+            yield idx_next
+
     # ── Génération standard ──────────────────────────────────────────────────
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None,
-                 repetition_penalty=1.0, top_p=None, stop_on_repetition=False):
+                 repetition_penalty=1.0, top_p=None, stop_on_repetition=False,
+                 stop_policy=None, logit_bias=None):
         """
         Génération avec KV-Cache :
           1. Prefill  — traite tout le prompt en une passe, construit le cache
           2. Decode   — génère un token à la fois en O(1) grâce au cache
+        Fenêtre glissante automatique au-delà de block_size.
 
-        stop_on_repetition : arrêt anticipé si la génération diverge (diminishing returns)
+        stop_on_repetition : arrêt anticipé si la génération diverge (= stop_policy="repetitive")
+        stop_policy        : "repetitive" | "diminishing" | "off"
+        logit_bias         : {token_id: biais} ajouté aux logits avant top-k
+        Retourne idx (B, T + n_générés).
         """
-        # Prefill
-        logits, past_kvs = self(idx)
-        probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
-        idx_next = torch.multinomial(probs, num_samples=1)
-        idx      = torch.cat((idx, idx_next), dim=1)
-        generated = [idx_next[0, 0].item()]
-
-        # Decode
-        for _ in range(max_new_tokens - 1):
-            logits, past_kvs = self(idx[:, [-1]], past_kvs=past_kvs)
-            probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
-            idx_next = torch.multinomial(probs, num_samples=1)
-            idx      = torch.cat((idx, idx_next), dim=1)
-            tok = idx_next[0, 0].item()
-            generated.append(tok)
-            if stop_on_repetition and self._is_repetitive(generated):
-                break
-
-        return idx
+        policy = self._resolve_stop_policy(stop_policy, stop_on_repetition)
+        dec = _Decoder(self, idx)
+        for _ in self._sample_stream(dec, max_new_tokens, temperature, top_k, top_p,
+                                     repetition_penalty, policy, logit_bias):
+            pass
+        return dec.idx
 
     @torch.no_grad()
     def generate_stream(self, idx, max_new_tokens, temperature=1.0, top_k=None,
                         repetition_penalty=1.0, top_p=None, stop_on_repetition=False,
-                        initial_past_kvs=None, cache_ref=None):
+                        initial_past_kvs=None, cache_ref=None,
+                        stop_policy=None, logit_bias=None):
         """
         Streaming token par token avec KV-Cache.
         Yield chaque token généré (int).
@@ -494,35 +736,23 @@ class nanoPOPIXA(nn.Module):
         initial_past_kvs : KV-cache existant (session persistante) — si fourni,
                            seul `idx` (nouveaux tokens) est traité en prefill,
                            le reste est récupéré depuis le cache. O(N_new) au lieu de O(N_total).
-        cache_ref        : liste mutable — si fournie, contiendra [past_kvs] après
-                           épuisement du générateur (pour sauvegarde session).
-        stop_on_repetition : s'arrête automatiquement si la génération diverge.
+                           Si cache + idx dépasse block_size, le cache est abandonné.
+        cache_ref        : liste mutable — contiendra [KVCache] couvrant tout le contexte
+                           (entrée + tokens yieldés) à la fin du générateur, y compris en
+                           cas d'interruption (close / exception). KVCache.token_ids donne
+                           les ids exacts couverts par le cache.
+        stop_on_repetition / stop_policy : arrêt automatique si la génération diverge.
         """
-        # Prefill — avec cache existant si la session est restaurée
-        logits, past_kvs = self(idx, past_kvs=initial_past_kvs)
-        probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
-        idx_next = torch.multinomial(probs, num_samples=1)
-        idx      = torch.cat((idx, idx_next), dim=1)
-        tok = idx_next[0, 0].item()
-        generated = [tok]
-        yield tok
-
-        # Decode
-        for _ in range(max_new_tokens - 1):
-            logits, past_kvs = self(idx[:, [-1]], past_kvs=past_kvs)
-            probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
-            idx_next = torch.multinomial(probs, num_samples=1)
-            idx      = torch.cat((idx, idx_next), dim=1)
-            tok = idx_next[0, 0].item()
-            generated.append(tok)
-            if stop_on_repetition and self._is_repetitive(generated):
-                break
-            yield tok
-
-        # Stocker le cache final pour persistance inter-sessions
-        if cache_ref is not None:
-            cache_ref.clear()
-            cache_ref.append(past_kvs)
+        policy = self._resolve_stop_policy(stop_policy, stop_on_repetition)
+        dec = None
+        try:
+            dec = _Decoder(self, idx, initial_past_kvs)
+            for t in self._sample_stream(dec, max_new_tokens, temperature, top_k, top_p,
+                                         repetition_penalty, policy, logit_bias):
+                yield t[0, 0].item()
+        finally:
+            # Stocker le cache final pour persistance inter-sessions
+            _store_cache(dec, cache_ref)
 
     # ── Thinking blocks (Claude-inspired) ───────────────────────────────────
 
@@ -553,69 +783,43 @@ class nanoPOPIXA(nn.Module):
         repetition_penalty: float = 1.0,
         initial_past_kvs=None,
         cache_ref=None,
+        think_stop_policy: str = "diminishing",
+        stop_policy: str = "repetitive",
+        logit_bias=None,
     ):
         """
         Génération deux phases inspirée de Claude's extended thinking.
 
         Phase 1 — Think (temperature=1 forcée, comme Claude) :
             Le modèle génère un raisonnement interne libre.
-            Arrêt anticipé si répétitif (diminishing returns).
+            Arrêt anticipé via think_stop_policy (défaut "diminishing" : 3 fenêtres
+            répétitives consécutives — le thinking a le droit d'explorer plus longtemps).
 
         Phase 2 — Response (temperature normale) :
             Le modèle génère la réponse finale en ayant "vu" son propre raisonnement.
-            Arrêt anticipé si répétitif.
+            Arrêt anticipé via stop_policy (défaut "repetitive").
 
         Yield : tuples (phase, token_int)
             phase = 'think' | 'response'
         """
-        # ── Prefill — avec cache existant si session restaurée ───────────────
-        logits, past_kvs = self(idx, past_kvs=initial_past_kvs)
+        think_policy = self._resolve_stop_policy(think_stop_policy)
+        resp_policy  = self._resolve_stop_policy(stop_policy)
+        dec = None
+        try:
+            # Prefill — avec cache existant si session restaurée
+            dec = _Decoder(self, idx, initial_past_kvs)
 
-        # ── Phase 1 : Thinking — temperature=1 (contrainte API Claude) ──────
-        generated_think = []
-        probs    = self._apply_sampling(logits, 1.0, top_k, top_p, repetition_penalty, idx)
-        idx_next = torch.multinomial(probs, num_samples=1)
-        idx      = torch.cat((idx, idx_next), dim=1)
-        tok = idx_next[0, 0].item()
-        generated_think.append(tok)
-        yield ("think", tok)
+            # Phase 1 : Thinking — temperature=1 (contrainte API Claude, claude.ts:1598)
+            for t in self._sample_stream(dec, think_budget, 1.0, top_k, top_p, repetition_penalty,
+                                         think_policy, logit_bias):
+                yield ("think", t[0, 0].item())
 
-        for _ in range(think_budget - 1):
-            logits, past_kvs = self(idx[:, [-1]], past_kvs=past_kvs)
-            probs    = self._apply_sampling(logits, 1.0, top_k, top_p, repetition_penalty, idx)
-            idx_next = torch.multinomial(probs, num_samples=1)
-            idx      = torch.cat((idx, idx_next), dim=1)
-            tok = idx_next[0, 0].item()
-            generated_think.append(tok)
-            yield ("think", tok)
-            if self._is_repetitive(generated_think):
-                break  # Diminishing returns détecté → fin du thinking
-
-        # ── Phase 2 : Response — temperature normale ──────────────────────────
-        generated_resp = []
-        logits, past_kvs = self(idx[:, [-1]], past_kvs=past_kvs)
-        probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
-        idx_next = torch.multinomial(probs, num_samples=1)
-        idx      = torch.cat((idx, idx_next), dim=1)
-        tok = idx_next[0, 0].item()
-        generated_resp.append(tok)
-        yield ("response", tok)
-
-        for _ in range(response_budget - 1):
-            logits, past_kvs = self(idx[:, [-1]], past_kvs=past_kvs)
-            probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
-            idx_next = torch.multinomial(probs, num_samples=1)
-            idx      = torch.cat((idx, idx_next), dim=1)
-            tok = idx_next[0, 0].item()
-            generated_resp.append(tok)
-            yield ("response", tok)
-            if self._is_repetitive(generated_resp):
-                break  # Diminishing returns → fin de la réponse
-
-        # Stocker le cache final pour persistance inter-sessions
-        if cache_ref is not None:
-            cache_ref.clear()
-            cache_ref.append(past_kvs)
+            # Phase 2 : Response — temperature normale
+            for t in self._sample_stream(dec, response_budget, temperature, top_k, top_p,
+                                         repetition_penalty, resp_policy, logit_bias):
+                yield ("response", t[0, 0].item())
+        finally:
+            _store_cache(dec, cache_ref)
 
     # ── Interleaved Thinking (Claude-inspired) ───────────────────────────────
 
@@ -631,6 +835,8 @@ class nanoPOPIXA(nn.Module):
         repetition_penalty: float = 1.0,
         initial_past_kvs=None,
         cache_ref=None,
+        stop_policy: str = "repetitive",
+        logit_bias=None,
     ):
         """
         Thinking intercalé — inspiré du beta `interleaved-thinking-2025-05-14`.
@@ -642,52 +848,75 @@ class nanoPOPIXA(nn.Module):
 
         Avantage vs thinking pur : la réflexion est distribuée tout au long
         de la réponse, permettant des corrections en cours de route.
+        La politique d'arrêt ne regarde que les tokens de réponse.
 
         Yield : tuples (phase, token_int)  où phase = 'think' | 'response'
         """
-        logits, past_kvs = self(idx, past_kvs=initial_past_kvs)
+        policy = self._resolve_stop_policy(stop_policy)
+        every  = max(1, interleave_every)
+        dec = None
+        try:
+            dec = _Decoder(self, idx, initial_past_kvs)
+            generated_resp = []
+            produced = 0
+            while produced < response_budget:
+                # ── Segment de réponse ──────────────────────────────────────
+                n = min(every, response_budget - produced)
+                count = 0
+                for t in self._sample_stream(dec, n, temperature, top_k, top_p, repetition_penalty,
+                                             policy, logit_bias, history=generated_resp):
+                    count += 1
+                    yield ("response", t[0, 0].item())
+                produced += count
+                if count < n or produced >= response_budget:
+                    break  # arrêt anticipé ou budget atteint
 
-        generated_resp  = []
-        resp_count      = 0  # tokens réponse depuis la dernière pause
-
-        # Premier token — réponse
-        probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
-        idx_next = torch.multinomial(probs, num_samples=1)
-        idx      = torch.cat((idx, idx_next), dim=1)
-        tok = idx_next[0, 0].item()
-        generated_resp.append(tok)
-        resp_count += 1
-        yield ("response", tok)
-
-        for step in range(response_budget - 1):
-            # ── Mini-pause thinking ? ───────────────────────────────────────
-            if resp_count >= interleave_every:
-                resp_count = 0
-                for _ in range(think_per_interleave):
-                    logits, past_kvs = self(idx[:, [-1]], past_kvs=past_kvs)
-                    probs    = self._apply_sampling(logits, 1.0, top_k, top_p, repetition_penalty, idx)
-                    idx_next = torch.multinomial(probs, num_samples=1)
-                    idx      = torch.cat((idx, idx_next), dim=1)
-                    yield ("think", idx_next[0, 0].item())
-
-            # ── Token de réponse ────────────────────────────────────────────
-            logits, past_kvs = self(idx[:, [-1]], past_kvs=past_kvs)
-            probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
-            idx_next = torch.multinomial(probs, num_samples=1)
-            idx      = torch.cat((idx, idx_next), dim=1)
-            tok = idx_next[0, 0].item()
-            generated_resp.append(tok)
-            resp_count += 1
-            yield ("response", tok)
-
-            if self._is_repetitive(generated_resp):
-                break
-
-        if cache_ref is not None:
-            cache_ref.clear()
-            cache_ref.append(past_kvs)
+                # ── Mini-pause thinking (temperature=1) ─────────────────────
+                for t in self._sample_stream(dec, think_per_interleave, 1.0, top_k, top_p,
+                                             repetition_penalty, None, logit_bias):
+                    yield ("think", t[0, 0].item())
+        finally:
+            _store_cache(dec, cache_ref)
 
     # ── Speculative Decoding (fast mode) ─────────────────────────────────────
+
+    @staticmethod
+    def _draft_ngram(ids: list, n_draft: int, max_ngram: int = 3) -> list:
+        """
+        Prompt lookup decoding : cherche l'occurrence la plus récente du suffixe courant
+        (n-gramme de max_ngram → 1 tokens) dans le contexte et propose les tokens qui la
+        suivaient. Draft gratuit (aucune passe du modèle) — efficace sur texte/code répétitif.
+        """
+        L = len(ids)
+        for n in range(min(max_ngram, L - 1), 0, -1):
+            suffix = ids[L - n:]
+            for start in range(L - n - 1, -1, -1):
+                if ids[start:start + n] == suffix:
+                    cont = ids[start + n:start + n + n_draft]
+                    if cont:
+                        return cont
+        return []
+
+    def _draft_self(self, dec, k, top_k, top_p, repetition_penalty, logit_bias,
+                    draft_temperature: float = 0.05):
+        """
+        Draft avec le MÊME modèle à température quasi nulle (quasi greedy).
+        Retourne (drafts, distributions q) — q sert au test accept/reject.
+        Le cache de travail est jeté : seul le cache vérifié est conservé.
+        """
+        drafts, qs = [], []
+        logits, kvs, ctx = dec.logits, dec.past_kvs, dec.idx
+        for i in range(k):
+            q = self._apply_sampling(logits, draft_temperature, top_k, top_p, repetition_penalty,
+                                     ctx, logit_bias=logit_bias)[0]
+            d = torch.multinomial(q, num_samples=1).item()
+            drafts.append(d)
+            qs.append(q)
+            if i < k - 1:
+                t = torch.tensor([[d]], dtype=torch.long, device=ctx.device)
+                logits, kvs = self(t, past_kvs=kvs)
+                ctx = torch.cat((ctx, t), dim=1)
+        return drafts, qs
 
     @torch.no_grad()
     def speculative_generate_stream(
@@ -700,117 +929,190 @@ class nanoPOPIXA(nn.Module):
         repetition_penalty: float = 1.0,
         initial_past_kvs=None,
         cache_ref=None,
+        draft: str = "ngram",
+        stop_policy=None,
+        logit_bias=None,
     ):
         """
         Speculative decoding — inspiré du beta `fast-mode-2026-02-01`.
 
         Principe :
-          1. Draft  — génère N tokens greedy (temp≈0) avec le MÊME modèle
-          2. Verify — passe les N tokens draft en une seule passe (O(N) vs N×O(1))
-          3. Accept/Reject — compare les distributions draft vs verif token par token
-             · Si compat : accepte le token (ratio ≥ 1 → accept certain)
-             · Sinon    : rejette et re-sample depuis la distribution corrigée
-          4. Bonus token — si tous les N drafts sont acceptés, génère 1 token bonus
-             grâce aux logits du dernier step du verifier.
-
-        Gain théorique : 2-3× plus rapide sur GPU (même modèle — pas de draft léger).
-        Le gain réel sur CPU/MPS est moindre car la parallélisation est limitée.
+          1. Draft  — propose k tokens :
+               · "ngram" (défaut) : prompt lookup — recopie la suite d'un n-gramme déjà vu
+                 dans le contexte. Gratuit → vrai gain de vitesse sur texte répétitif.
+               · "self" : le MÊME modèle à temp≈0 (pédagogique ; pas plus rapide sans
+                 modèle draft plus léger).
+          2. Verify — UNE passe du modèle sur les k drafts (masque causal décalé) →
+             distributions cibles p_0..p_k pour chaque position.
+          3. Accept/Reject (Leviathan et al., 2023) — draft d_i accepté avec proba
+             min(1, p_i(d_i) / q_i(d_i)) ; sinon on ré-échantillonne depuis
+             max(0, p_i − q_i) normalisé et on s'arrête. Distribution de sortie
+             IDENTIQUE à l'échantillonnage normal.
+          4. Bonus — si les k drafts sont acceptés, un token de plus gratuit (p_k).
+          Le KV-cache est tronqué aux tokens acceptés (les drafts rejetés en sortent).
 
         Yield : int (token généré)
         """
-        # Prefill
-        logits, past_kvs = self(idx, past_kvs=initial_past_kvs)
-        probs    = self._apply_sampling(logits, temperature, top_k, top_p, repetition_penalty, idx)
-        idx_next = torch.multinomial(probs, num_samples=1)
-        idx      = torch.cat((idx, idx_next), dim=1)
-        yield idx_next[0, 0].item()
+        if draft not in ("ngram", "self"):
+            raise ValueError(f"draft inconnu : {draft!r} (ngram|self)")
+        policy = self._resolve_stop_policy(stop_policy)
+        dec = None
+        try:
+            dec = _Decoder(self, idx, initial_past_kvs)
+            device = dec.idx.device
 
-        generated = 1
+            def target(step_logits, ctx):
+                return self._apply_sampling(step_logits, temperature, top_k, top_p,
+                                            repetition_penalty, ctx, logit_bias=logit_bias)[0]
 
-        while generated < max_new_tokens:
-            n = min(n_draft, max_new_tokens - generated)
+            history  = []
+            produced = 0
+            while produced < max_new_tokens:
+                logits = dec.advance()  # plus aucun token en attente
+                room   = self.config.block_size - dec.cache_len
+                k      = min(n_draft, max_new_tokens - produced - 1, room)
 
-            # ── Phase Draft : N tokens greedy (temp≈0) ───────────────────────
-            draft_tokens = []
-            draft_probs  = []   # distributions du draft pour accept/reject
-            draft_kvs    = past_kvs   # on clone le KV-cache au début du draft
-
-            draft_idx    = idx
-            for _ in range(n):
-                d_logits, draft_kvs = self(draft_idx[:, [-1]], past_kvs=draft_kvs)
-                # Greedy pour le draft — temp très basse (≈ argmax)
-                d_probs = self._apply_sampling(
-                    d_logits, 0.05, top_k, top_p, repetition_penalty, draft_idx
-                )
-                d_next  = torch.multinomial(d_probs, num_samples=1)
-                draft_tokens.append(d_next[0, 0].item())
-                draft_probs.append(d_probs[0])           # (vocab_size,)
-                draft_idx = torch.cat((draft_idx, d_next), dim=1)
-
-            # ── Phase Verify : une passe sur tous les tokens draft ────────────
-            # return_all_logits=True → (1, n, vocab_size) pour vérifier chaque position
-            draft_tensor = torch.tensor(
-                draft_tokens, dtype=torch.long, device=idx.device
-            ).unsqueeze(0)                               # (1, n)
-            v_logits, v_kvs = self(draft_tensor, past_kvs=past_kvs,
-                                   return_all_logits=True)
-            # v_logits : (1, n, vocab_size) — logits pour chaque position
-
-            # ── Accept/Reject ─────────────────────────────────────────────────
-            accepted      = 0
-            last_good_kvs = past_kvs
-
-            for i, tok in enumerate(draft_tokens):
-                # Distribution verifier au step i (token draft[i] à partir du contexte)
-                step_logits = v_logits[:, i:i+1, :]     # (1, 1, vocab_size)
-                v_probs     = self._apply_sampling(
-                    step_logits, temperature, top_k, top_p, repetition_penalty, idx
-                )[0]                                     # (vocab_size,)
-
-                d_prob = draft_probs[i][tok].item()
-                v_prob = v_probs[tok].item()
-
-                accept_ratio = min(1.0, v_prob / (d_prob + 1e-9))
-                if torch.rand(1).item() < accept_ratio:
-                    # Token accepté
-                    idx_next = torch.tensor([[tok]], dtype=torch.long, device=idx.device)
-                    idx      = torch.cat((idx, idx_next), dim=1)
-                    yield tok
-                    generated += 1
-                    accepted  += 1
-                else:
-                    # Rejet — re-sample depuis la distribution corrigée
-                    # p_corrected = max(0, p_verifier - p_draft) normalisé
-                    corrected = torch.clamp(v_probs - draft_probs[i], min=0)
-                    s = corrected.sum()
-                    if s > 0:
-                        corrected /= s
-                        tok_corr = torch.multinomial(corrected, num_samples=1).item()
+                # ── Phase Draft ───────────────────────────────────────────────
+                drafts, q_probs = [], None
+                if k > 0:
+                    if draft == "self":
+                        drafts, q_probs = self._draft_self(dec, k, top_k, top_p,
+                                                           repetition_penalty, logit_bias)
                     else:
-                        tok_corr = v_probs.argmax().item()
-                    idx_next = torch.tensor([[tok_corr]], dtype=torch.long, device=idx.device)
-                    idx      = torch.cat((idx, idx_next), dim=1)
-                    yield tok_corr
-                    generated += 1
+                        drafts = self._draft_ngram(dec.idx[0].tolist(), k)
+
+                if not drafts:
+                    # Aucun draft → pas de décodage classique
+                    p   = target(logits, dec.idx)
+                    tok = torch.multinomial(p, num_samples=1).item()
+                    burst = [tok]
+                    dec.push(tok)
+                else:
+                    # ── Phase Verify : une passe sur tous les drafts ──────────
+                    base = dec.cache_len
+                    d_tensor = torch.tensor([drafts], dtype=torch.long, device=device)
+                    v_logits, v_kvs = self(d_tensor, past_kvs=dec.past_kvs, return_all_logits=True)
+
+                    # ── Accept/Reject ─────────────────────────────────────────
+                    ctx   = dec.idx
+                    burst = []
+                    n_acc = 0
+                    for i, d in enumerate(drafts):
+                        # p_0 = logits courants ; p_i = sortie du verifier à la position i-1
+                        p   = target(logits if i == 0 else v_logits[:, i - 1:i, :], ctx)
+                        q_d = q_probs[i][d].item() if q_probs is not None else 1.0
+                        if torch.rand(1).item() < min(1.0, p[d].item() / max(q_d, 1e-12)):
+                            burst.append(d)
+                            n_acc += 1
+                            ctx = torch.cat((ctx, d_tensor[:, i:i + 1]), dim=1)
+                            continue
+                        # Rejet — ré-échantillonne depuis max(0, p − q) normalisé
+                        if q_probs is not None:
+                            residual = torch.clamp(p - q_probs[i], min=0)
+                        else:
+                            residual = p.clone()
+                            residual[d] = 0.0  # q one-hot (draft n-gramme)
+                        s = residual.sum()
+                        dist = residual / s if s > 0 else p
+                        burst.append(torch.multinomial(dist, num_samples=1).item())
+                        break
+                    else:
+                        # ── Bonus token : tous les drafts acceptés ───────────
+                        p = target(v_logits[:, -1:, :], ctx)
+                        burst.append(torch.multinomial(p, num_samples=1).item())
+
+                    # Cache = contexte + drafts acceptés ; dernier token en attente
+                    dec.commit(base, v_kvs, drafts, n_acc, burst[-1])
+
+                for tok in burst:
+                    yield tok
+                produced += len(burst)
+                history.extend(burst)
+                if self._should_stop(history, policy):
                     break
+        finally:
+            _store_cache(dec, cache_ref)
 
-            # Mettre à jour le KV-cache principal avec le verifier
-            # (on repart du verifier dont la passe couvre tout le draft)
-            past_kvs = v_kvs
+    # ── Structured outputs (JSON / JSON Schema) ──────────────────────────────
 
-            # ── Bonus token si tous les drafts acceptés ───────────────────────
-            if accepted == n and generated < max_new_tokens:
-                b_logits = v_logits[:, -1:, :]          # dernier logit du verifier
-                b_probs  = self._apply_sampling(
-                    b_logits, temperature, top_k, top_p, repetition_penalty, idx
-                )
-                b_next   = torch.multinomial(b_probs, num_samples=1)
-                idx      = torch.cat((idx, b_next), dim=1)
-                past_kvs_bonus = None
-                _, past_kvs = self(b_next, past_kvs=past_kvs)
-                yield b_next[0, 0].item()
-                generated += 1
+    @torch.no_grad()
+    def generate_structured(
+        self, idx, constraint,
+        max_new_tokens: int = 200,
+        temperature: float = 0.8,
+        top_k: int = None,
+        top_p: float = None,
+        repetition_penalty: float = 1.0,
+        initial_past_kvs=None,
+        cache_ref=None,
+        force_complete: bool = True,
+    ):
+        """
+        Structured outputs — génération contrainte par une grammaire JSON / JSON Schema
+        (inspiré du beta `structured-outputs-2025-12-15`).
 
-        if cache_ref is not None:
-            cache_ref.clear()
-            cache_ref.append(past_kvs)
+        constraint : structured.TokenConstraint — avancé en place, token par token.
+
+        Échantillonnage par rejet : on tire d'abord dans la distribution normale ; si le
+        token viole la grammaire, on retire avec le masque des tokens autorisés (exact
+        sans top-k/top-p). Si le JSON est déjà complet et que le modèle sort de la
+        grammaire → fin naturelle.
+
+        force_complete : quand le budget restant ne suffit plus, on ferme le JSON avec
+        la complétion la plus courte → sortie toujours valide (si le budget le permet).
+
+        Yield : int (token généré). À la fin, constraint.is_complete() indique si le JSON
+        est complet.
+        """
+        closing_cache = {}
+
+        def closing_for(c):
+            if c.state not in closing_cache:
+                closing_cache[c.state] = c.completion_tokens()
+            return closing_cache[c.state]
+
+        dec = None
+        try:
+            dec = _Decoder(self, idx, initial_past_kvs)
+            window = 0
+            if force_complete:
+                first  = closing_for(constraint)
+                window = 32 + 2 * (len(first) if first is not None else 0)
+
+            produced = 0
+            while produced < max_new_tokens and not constraint.is_terminal():
+                remaining = max_new_tokens - produced
+                logits = dec.advance()
+                probs  = self._apply_sampling(logits, temperature, top_k, top_p,
+                                              repetition_penalty, dec.idx)
+                tok = torch.multinomial(probs, num_samples=1)[0, 0].item()
+
+                if not constraint.is_allowed(tok):
+                    if constraint.is_complete():
+                        break  # JSON complet et le modèle veut s'arrêter
+                    mask = constraint.allowed_mask()
+                    if not bool(mask.any()):
+                        break  # aucun token du vocabulaire ne peut continuer
+                    probs = self._apply_sampling(logits, temperature, top_k, top_p,
+                                                 repetition_penalty, dec.idx, mask=mask)
+                    tok = torch.multinomial(probs, num_samples=1)[0, 0].item()
+
+                # Fin de budget en vue : le token choisi laisse-t-il de quoi fermer le JSON ?
+                if force_complete and remaining <= window:
+                    nxt = constraint.clone()
+                    nxt.advance(tok)
+                    after = closing_for(nxt)
+                    if after is None or len(after) > remaining - 1:
+                        for t in (closing_for(constraint) or [])[:remaining]:
+                            constraint.advance(t)
+                            dec.push(t)
+                            produced += 1
+                            yield t
+                        break
+
+                constraint.advance(tok)
+                dec.push(tok)
+                produced += 1
+                yield tok
+        finally:
+            _store_cache(dec, cache_ref)
