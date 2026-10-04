@@ -1066,12 +1066,23 @@ class nanoPOPIXA(nn.Module):
         Yield : int (token généré). À la fin, constraint.is_complete() indique si le JSON
         est complet.
         """
-        closing_cache = {}
+        # Seule la LONGUEUR de la fermeture sert au contrôle de budget : on ne garde que des
+        # entiers, dans un cache borné (sinon mémoire Θ(n²) quand le modèle imbrique sans fin)
+        closing_len_cache = {}
 
-        def closing_for(c):
-            if c.state not in closing_cache:
-                closing_cache[c.state] = c.completion_tokens()
-            return closing_cache[c.state]
+        def closing_len(c):
+            if c.state not in closing_len_cache:
+                if len(closing_len_cache) > 512:
+                    closing_len_cache.clear()
+                toks = c.completion_tokens()
+                closing_len_cache[c.state] = None if toks is None else len(toks)
+            return closing_len_cache[c.state]
+
+        def pad_mask(mask, size):
+            # Vocabulaire du modèle rembourré (ex. 50304) : les ids hors contrainte sont interdits
+            if mask.numel() >= size:
+                return mask[:size]
+            return torch.cat((mask, torch.zeros(size - mask.numel(), dtype=torch.bool)))
 
         dec = None
         try:
@@ -1090,9 +1101,9 @@ class nanoPOPIXA(nn.Module):
                 remaining = max_new_tokens - produced
                 # Invariant (force_complete) : la fermeture la plus courte tient toujours
                 # dans le budget restant → plus de marge du tout : on ferme maintenant
-                current = closing_for(constraint) if force_complete else None
-                if current is not None and len(current) >= remaining:
-                    yield from emit(current[:remaining])
+                current = closing_len(constraint) if force_complete else None
+                if current is not None and current >= remaining:
+                    yield from emit((constraint.completion_tokens() or [])[:remaining])
                     break
 
                 logits = dec.advance()
@@ -1109,7 +1120,7 @@ class nanoPOPIXA(nn.Module):
                 banned = []
                 for _ in range(16):
                     if tok is None:
-                        mask = constraint.allowed_mask().clone()
+                        mask = pad_mask(constraint.allowed_mask(), logits.size(-1)).clone()
                         if banned:
                             mask[banned] = False
                         if not bool(mask.any()):
@@ -1121,15 +1132,15 @@ class nanoPOPIXA(nn.Module):
                         break  # fermeture inexprimable avec ce vocabulaire : meilleur effort
                     nxt = constraint.clone()
                     nxt.advance(tok)
-                    after = closing_for(nxt)
-                    if after is not None and len(after) <= remaining - 1:
+                    after = closing_len(nxt)
+                    if after is not None and after <= remaining - 1:
                         break  # token abordable
                     banned.append(tok)
                     tok = None
 
                 if tok is None:
                     if current is not None:
-                        yield from emit(current[:remaining])
+                        yield from emit((constraint.completion_tokens() or [])[:remaining])
                     break
                 yield from emit([tok])
         finally:

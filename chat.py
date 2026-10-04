@@ -89,7 +89,9 @@ def load_model(checkpoint_path: str, device: str):
             sys.exit(1)
         enc    = tiktoken.get_encoding("gpt2")
         encode = lambda s: enc.encode_ordinary(s)
-        decode = lambda l: enc.decode(l)
+        # Vocabulaire du modèle éventuellement rembourré (ex. 50304) : les ids de padding,
+        # inconnus de tiktoken, sont ignorés au décodage au lieu de faire planter le tour
+        decode = lambda l: enc.decode([i for i in l if 0 <= i < enc.n_vocab])
     elif "vocab" in ckpt:
         stoi   = ckpt["vocab"]["stoi"]
         itos   = ckpt["vocab"]["itos"]
@@ -369,22 +371,33 @@ def stream_json(model, encode, decode, context_str,
     return text
 
 
-def report_json(constraint, schema) -> None:
-    """Affiche le statut du JSON généré (complet + valide vis-à-vis du schéma ?)."""
+def report_json(constraint, schema, interrupted: bool = False, task_capped: bool = False) -> None:
+    """
+    Affiche le statut du JSON généré (complet + valide vis-à-vis du schéma ?).
+    interrupted : Ctrl+C pendant le tour · task_capped : budget du tour réduit par /taskbudget
+    """
     import structured
     if not constraint.is_complete():
-        print(WARN_C + "  ⚠ JSON incomplet" + INFO_C
-              + "  (budget de tokens épuisé — augmente /tokens)" + R)
+        if interrupted:
+            reason = "génération interrompue"
+        elif task_capped:
+            reason = "task budget presque épuisé — /taskbudget N pour l'augmenter"
+        else:
+            reason = "budget de tokens épuisé — augmente /tokens"
+        print(WARN_C + "  ⚠ JSON incomplet" + INFO_C + f"  ({reason})" + R)
         return
     try:
         instance = json.loads(constraint.generated.decode("utf-8"))
+    except RecursionError:
+        # json.loads plafonne vers ~1000 niveaux ; le décodage contraint garantit déjà le JSON
+        detail = "grammaire garantie" if schema is None else "schéma garanti par le décodage"
+        print(JSON_C + "  ✓ JSON valide" + INFO_C
+              + f"  (trop profond pour être relu par json.loads — {detail})" + R)
+        return
     except ValueError as e:
         print(ERR_C + f"  ✗ JSON invalide : {e}" + R)
         return
-    try:
-        errors = structured.validate_instance(instance, schema)
-    except RecursionError:
-        errors = ["document trop profond pour être validé"]
+    errors = structured.validate_instance(instance, schema)
     if errors:
         print(ERR_C + "  ✗ JSON hors schéma : " + "; ".join(errors[:3]) + R)
     else:
@@ -793,7 +806,11 @@ def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: i
                 if token_bytes is None:
                     print(INFO_C + "  Indexation du vocabulaire…" + R)
                     token_bytes = load_token_bytes(ckpt, model.config.vocab_size)
-                json_constraint = structured.json_constraint(token_bytes, schema)
+                candidate = structured.json_constraint(token_bytes, schema)
+                if candidate.completion_tokens() is None:
+                    raise ValueError("le vocabulaire du modèle ne permet pas d'écrire un JSON "
+                                     "conforme à ce schéma")
+                json_constraint = candidate
                 json_schema     = schema
                 json_mode       = True
             except (ImportError, ValueError, OSError) as e:
@@ -978,7 +995,8 @@ def run_chat(checkpoint_path: str, max_tokens: int, temperature: float, top_k: i
                     repetition_penalty=repetition_penalty,
                     initial_past_kvs=init_kvs, cache_ref=cache_ref, stats=stats,
                 )
-                report_json(json_constraint, json_schema)
+                report_json(json_constraint, json_schema, interrupted=stats.get("interrupted", False),
+                        task_capped=resp_budget < max_tokens)
 
             elif use_think:
                 response = stream_think(

@@ -944,3 +944,665 @@ def test_timing_constraint_build_large_schema_gpt2(gpt2, case):
     st = m.advance_bytes(m.initial_state, probe)
     assert m.is_accepting(st) == ok
     assert elapsed < 3.0, f"{case} : construction {elapsed:.1f} s"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Tour 2
+# ═════════════════════════════════════════════════════════════════════════════
+
+R2_SCHEMAS = [
+    None,
+    {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 4},
+    {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "string", "maxLength": 3},
+                                      {"type": "boolean"}], "items": False},
+    {"type": "object", "properties": {
+        "a": {"type": "integer"},
+        "b": {"type": ["string", "null"], "minLength": 2, "maxLength": 4},
+        "c": {"type": "array", "items": {"type": "object", "properties": {"x": {"type": "number"}},
+                                         "required": ["x"]}}},
+     "required": ["a", "c"]},
+    {"anyOf": [{"type": "integer"}, {"type": "string", "maxLength": 2},
+               {"type": "array", "items": {"type": "integer"}, "maxItems": 2}]},
+    {"type": "object", "additionalProperties": {"type": "array",
+                                                "items": {"type": "string", "minLength": 1}}},
+    {"enum": [1, 12, 1.5, "a", "ab", [1, 2], {"k": "v"}, None, True]},
+    {"type": "string", "minLength": 2, "maxLength": 3},
+    {"$defs": {"n": {"type": "object", "properties": {
+        "v": {"type": "integer"},
+        "kids": {"type": "array", "items": {"$ref": "#/$defs/n"}, "maxItems": 2}},
+        "required": ["v"]}}, "$ref": "#/$defs/n"},
+    {"type": "integer"},
+    {"type": "number"},
+    {"type": "object", "properties": {"é": {"const": "😀"}, "\"q": {"type": "string", "maxLength": 1}},
+     "required": ["é"]},
+]
+
+
+def _r2_walk_and_check(schema, tbv, rng, walks, steps, brute_every):
+    """
+    Marches aléatoires (tokens surtout structurels) ; à chaque arrêt :
+      - masque == force brute calculée par un matcher NEUF (caches indépendants) ;
+      - vivacité : masque non vide OU JSON complet ; is_terminal ⇔ complet et masque vide ;
+      - completion_tokens : tokens autorisés un à un, instance finale valide.
+    """
+    c = json_constraint(tbv, schema)
+    checked = 0
+    for w in range(walks):
+        c.reset()
+        for _ in range(rng.randint(0, steps)):
+            ids = c.allowed_mask().nonzero().flatten().tolist()
+            if not ids:
+                assert c.is_complete() and c.is_terminal(), (schema, c.generated)
+                break
+            assert not c.is_terminal(), (schema, c.generated)
+            pool = ([i for i in ids if not _LETTERS.search(tbv[i])]
+                    if rng.random() < 0.75 else ids)
+            c.advance(rng.choice(pool or ids))
+        mask = c.allowed_mask().tolist()
+        if w % brute_every == 0:
+            fresh = JSONSchemaMatcher(schema)
+            st = fresh.advance_bytes(fresh.initial_state, c.generated)
+            assert st is not None
+            bad = [(i, tbv[i]) for i in range(len(tbv))
+                   if (tbv[i] is not None and fresh.advance_bytes(st, tbv[i]) is not None)
+                   != mask[i]]
+            assert not bad, (schema, c.generated, bad[:5])
+            checked += 1
+        assert any(mask) or c.is_complete(), (schema, c.generated)
+        assert c.is_terminal() == (c.is_complete() and not any(mask)), (schema, c.generated)
+        toks = c.completion_tokens()
+        assert toks is not None, (schema, c.generated)
+        d = c.clone()
+        for t in toks:
+            assert d.is_allowed(t)
+            d.advance(t)
+        assert d.is_complete(), (schema, c.generated, toks)
+        inst = json.loads(d.generated)
+        if schema is not None:
+            assert validate_instance(inst, schema) == [], (schema, d.generated)
+    return checked
+
+
+@pytest.mark.parametrize("si", range(len(R2_SCHEMAS)))
+def test_r2_mask_vs_fresh_matcher_and_liveness(gpt2, si):
+    enc, tb = gpt2
+    schema = R2_SCHEMAS[si]
+    rng = random.Random(100 + si)
+    assert _r2_walk_and_check(schema, tb, rng, walks=10, steps=30, brute_every=5) == 2
+    chars, ctb = _char_vocab()
+    assert _r2_walk_and_check(schema, ctb, rng, walks=25, steps=60, brute_every=1) == 25
+
+
+def _utf8_prefix_ok(tail: bytes) -> bool:
+    """`tail` (1-3 octets) est-il le début strict d'un caractère UTF-8 valide ?"""
+    for cp in list(range(0x80, 0xD800)) + list(range(0xE000, 0x110000, 7)) + [0x10FFFF]:
+        e = chr(cp).encode('utf-8')
+        if len(e) > len(tail) and e.startswith(tail):
+            return True
+    return False
+
+
+def _string_body_viable(body: bytes, mn: int, mx):
+    """
+    Oracle indépendant (sans échappement) : `body` = octets après le '"' ouvrant d'une
+    chaîne racine {minLength mn, maxLength mx}. None si hors du domaine de l'oracle.
+    """
+    if b'\\' in body:
+        return None
+    q = body.find(b'"')
+    content, rest = (body, b'') if q < 0 else (body[:q], body[q + 1:])
+    if q >= 0 and rest:
+        return False                                    # rien après la racine
+    pend = 0
+    try:
+        s = content.decode('utf-8')
+    except UnicodeDecodeError:
+        if q >= 0:
+            return False
+        for k in (1, 2, 3):
+            try:
+                s = content[:-k].decode('utf-8')
+            except UnicodeDecodeError:
+                continue
+            if not _utf8_prefix_ok(content[-k:]):
+                return False
+            pend = 1
+            break
+        else:
+            return False
+    if any(ord(ch) < 0x20 for ch in s):
+        return False
+    n = len(s) + pend
+    if mx is not None and n > mx:
+        return False
+    return n >= mn if q >= 0 else True
+
+
+def test_r2_utf8_delimiter_crossing_tokens_vs_codepoint_oracle_gpt2(gpt2):
+    """
+    Tokens gpt2 mêlant un caractère non ASCII et un délimiteur JSON ('…"', '"—', '—"',
+    '…]', '®,', '™:'…) + un échantillon de tokens UTF-8 partiels, aux bornes
+    minLength / maxLength d'une chaîne racine : masque et is_allowed == oracle.
+    """
+    enc, tb = gpt2
+    mix = [i for i, t in enumerate(tb) if t and any(b >= 0x80 for b in t)
+           and any(ch in t for ch in b'"{}[],:')]
+    assert len(mix) >= 10
+    partial = [i for i, t in enumerate(tb) if t and any(b >= 0x80 for b in t)][::9]
+    probe = sorted(set(mix + partial))
+    n = 0
+    for mn, mx in [(0, None), (0, 0), (0, 1), (1, 1), (2, 2), (0, 2), (1, 3), (3, None)]:
+        schema = {"type": "string", "minLength": mn}
+        if mx is not None:
+            schema["maxLength"] = mx
+        c = json_constraint(tb, schema)
+        m = c.matcher
+        for pre in (b'"', b'"a', b'"ab', b'"\xe2\x80', b'"a\xe2\x80', b'"\xe2', b'"\xc2'):
+            st = m.advance_bytes(m.initial_state, pre)
+            if st is None:
+                continue
+            c.state = st
+            mask = c.allowed_mask().tolist()
+            for t in probe:
+                o = _string_body_viable(pre[1:] + tb[t], mn, mx)
+                if o is None:
+                    continue
+                n += 1
+                assert mask[t] == o == c.is_allowed(t), (schema, pre, tb[t], o, mask[t])
+    assert n > 3000
+
+
+def test_r2_duplicate_bytes_and_bytearray_vocab():
+    """Plusieurs ids pour les mêmes octets (trie.multi) et éléments bytearray."""
+    chars = list('{}[]":,0123 abc') + ['{', '"a', '"a', ']', 'é', 'é', '\x00', '"}']
+    tb = token_bytes_from_itos(dict(enumerate(chars)), len(chars) + 5)
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+    for vocab in (tb, [bytearray(t) if t else None for t in tb]):
+        c = json_constraint(vocab, schema)
+        for step in (None, '{', '"a', '"', ':', '"', 'é'):
+            if step is not None:
+                c.advance(chars.index(step))
+            mask = c.allowed_mask().tolist()
+            assert mask == [c.is_allowed(i) for i in range(len(vocab))], c.generated
+            d = c.clone()
+            for t in d.completion_tokens():
+                d.advance(t)
+            assert d.is_terminal() and json.loads(d.generated)["a"] in ("", "é")
+        dup = [i for i, ch in enumerate(chars) if ch == 'é']
+        assert all(mask[i] for i in dup)                 # les deux ids de 'é'
+        assert not any(mask[len(chars):])                # padding
+
+
+def test_r2_mask_tensor_outlives_constraint_and_cache(gpt2):
+    import gc
+    enc, tb = gpt2
+    c = json_constraint(tb, None)
+    c.advance(tb.index(b'{'))
+    mk = c.allowed_mask()
+    ref = mk.tolist()
+    c._shared.masks.clear()
+    del c
+    gc.collect()
+    junk = [bytearray(b'\x01' * len(tb)) for _ in range(100)]
+    assert mk.tolist() == ref and 0 < int(mk.sum()) < 200
+    del junk
+
+
+@pytest.mark.parametrize("case", ["oneOf40", "arrUnion39", "props5000", "enum5000"])
+def test_r2_timing_many_configurations_gpt2(gpt2, case):
+    """
+    États à NOMBREUSES configurations : chaîne suivie partagée par 40 variantes oneOf,
+    union de 39 tableaux de chaînes bornées, 5 000 clés / valeurs d'enum en concurrence.
+    """
+    enc, tb = gpt2
+    variants = {"oneOf": [{"type": "object", "properties": {
+        "title": {"type": "string", "maxLength": 200}, f"extra{i}": {"type": "integer"}},
+        "required": ["title", f"extra{i}"]} for i in range(40)]}
+    schema, prefix = {
+        "oneOf40": (variants, b'{"title":"Bonj'),
+        "arrUnion39": ({"anyOf": [{"type": "array", "items": {"type": "string", "maxLength": k}}
+                                  for k in range(1, 40)]}, b'["'),
+        "props5000": ({"type": "object", "properties": {f"k{i}": {"type": "integer"}
+                                                         for i in range(5000)}}, b'{"'),
+        "enum5000": ({"enum": [f"ville_{i:05d}" for i in range(5000)]}, b'"ville_0'),
+    }[case]
+    m = JSONSchemaMatcher(schema)
+    c = TokenConstraint(m, tb)
+    c.state = m.advance_bytes(m.initial_state, prefix)
+    # enum5000 est compilé en UNE configuration (arbre des valeurs) depuis le tour 2 :
+    # la précondition « nombreuses configurations » ne vaut que pour les autres cas
+    assert c.state is not None and (case == "enum5000" or len(c.state) >= 39)
+    rng = random.Random(1)
+    ids = [rng.randrange(len(tb)) for _ in range(3000)]
+    t0 = time.perf_counter()
+    res = [c.is_allowed(i) for i in ids]
+    t_allowed = (time.perf_counter() - t0) / len(ids)
+    t0 = time.perf_counter()
+    mask = c.allowed_mask()
+    t_fresh = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    for _ in range(20):
+        c.allowed_mask()
+    t_cached = (time.perf_counter() - t0) / 20
+    assert [bool(mask[i]) for i in ids] == res
+    assert t_fresh < 2.0, t_fresh
+    assert t_cached < 0.005, t_cached
+    assert t_allowed < 0.0002, t_allowed
+
+
+# ── completion_tokens : nombre de TOKENS de la fermeture ─────────────────────
+
+@pytest.mark.parametrize("n", [200, 2000])
+def test_r2_completion_tokens_token_count_vs_valid_closing_gpt2(gpt2, n):
+    """
+    completion_tokens() tokenise la plus courte complétion en OCTETS, remplie de 'a'
+    pour minLength. Avec gpt2, la plus longue suite de 'a' en un token fait 4 octets,
+    alors que '=' * 64, '-' * 64, '_' * 64 ou '.' * 64 sont des tokens : la fermeture
+    renvoyée coûte jusqu'à 15× plus de tokens qu'une fermeture valide évidente
+    (mesuré : minLength 2000 → 502 tokens contre 34 ; minLength 200 → ~57 contre ~11).
+
+    Or le budget de generate_structured est en TOKENS : « sortie toujours complète si
+    max_new_tokens >= len(completion_tokens()) », force_complete bannit tout token dont
+    la fermeture ne tient pas, et `popixa gen --schema` refuse de tourner avec
+    « --tokens N insuffisant : il faut au moins len(completion_tokens()) tokens ».
+    Avec --tokens 100 et minLength 200, le JSON est déclaré impossible alors qu'une
+    sortie complète tient en ~11 tokens.
+    """
+    enc, tb = gpt2
+    schema = {"type": "object", "properties": {"résumé": {"type": "string", "minLength": n}},
+              "required": ["résumé"]}
+    c = json_constraint(tb, schema)
+    alt = enc.encode('{"résumé":"' + '=' * n + '"}')
+    probe = c.clone()
+    for t in alt:
+        assert probe.is_allowed(t), (probe.generated, tb[t])
+        probe.advance(t)
+    assert probe.is_terminal()
+    assert validate_instance(json.loads(probe.generated), schema) == []
+    toks = c.completion_tokens()
+    assert toks is not None
+    assert len(toks) <= 2 * len(alt), (
+        f"fermeture de {len(toks)} tokens alors qu'une fermeture valide en "
+        f"{len(alt)} tokens existe")
+    # même constat en cours de génération (le modèle a écrit quelques mots)
+    for t in enc.encode('{"résumé":"Bonjour à tous'):
+        c.advance(t)
+    toks = c.completion_tokens()
+    alt = enc.encode('=' * (n - len('Bonjour à tous')) + '"}')
+    assert len(toks) <= 2 * len(alt), (len(toks), len(alt))
+
+
+def test_r2_completion_tokens_greedy_segmentation_is_token_optimal_gpt2(gpt2):
+    """
+    Pour les MÊMES octets (plus courte complétion), la segmentation « plus long préfixe
+    d'abord » a autant de tokens que l'optimum (programmation dynamique) sur des états
+    aléatoires de schémas variés (régression).
+    """
+    enc, tb = gpt2
+    tokset = {}
+    for i, t in enumerate(tb):
+        if t is not None:
+            tokset.setdefault(t, i)
+    maxlen = max(len(t) for t in tokset)
+
+    def dp(data):
+        best = [0] + [None] * len(data)
+        for i in range(len(data)):
+            if best[i] is None:
+                continue
+            for L in range(1, min(maxlen, len(data) - i) + 1):
+                if data[i:i + L] in tokset and (best[i + L] is None or best[i] + 1 < best[i + L]):
+                    best[i + L] = best[i] + 1
+        return best[-1]
+
+    rng = random.Random(5)
+    schemas = [None, RICH, R2_SCHEMAS[3], R2_SCHEMAS[8],
+               {"type": "array", "items": {"type": "array", "items": {"type": "integer"},
+                                           "minItems": 1}, "minItems": 3}]
+    n = 0
+    for schema in schemas:
+        c = json_constraint(tb, schema)
+        for _ in range(25):
+            c.reset()
+            for _ in range(rng.randint(0, 25)):
+                ids = c.allowed_mask().nonzero().flatten().tolist()
+                if not ids:
+                    break
+                pool = [i for i in ids if not _LETTERS.search(tb[i])] if rng.random() < .7 else ids
+                c.advance(rng.choice(pool or ids))
+            comp = c.matcher.shortest_completion(c.state)
+            toks = c.completion_tokens()
+            assert b''.join(tb[t] for t in toks) == comp
+            assert len(toks) == dp(comp), (c.generated, comp)
+            n += 1
+    assert n == 125
+
+
+# ── generate_structured (model.py) : coût de la fermeture à chaque pas ──────
+
+_GEN_SCALING_SCRIPT = textwrap.dedent('''
+    import gc, sys, time, tracemalloc
+    sys.path.insert(0, {scratch!r})
+    sys.path.append({repo!r})
+    import structured as S, torch
+    assert S.__file__.startswith({scratch!r})
+    from model import nanoPOPIXA, POPIXAConfig
+    torch.manual_seed(0)
+    torch.set_num_threads(1)
+    chars = sorted(set(chr(i) for i in range(32, 127)))
+    tb = S.token_bytes_from_itos(dict(enumerate(chars)), len(chars))
+    LB = chars.index("[")
+    m = nanoPOPIXA(POPIXAConfig(vocab_size=len(chars), block_size=32, n_layer=1, n_head=1,
+                                n_embd=8, dropout=0.0)).eval()
+    orig = m._apply_sampling
+
+    def degenerate(logits, temperature, top_k, top_p, rp, idx, logit_bias=None, mask=None):
+        # petit modèle char-level dégénéré qui boucle sur '[' tant que c'est permis
+        if mask is None or bool(mask.reshape(-1)[LB]):
+            p = torch.zeros(1, len(chars))
+            p[0, LB] = 1.0
+            return p
+        return orig(logits, temperature, top_k, top_p, rp, idx, logit_bias=logit_bias, mask=mask)
+
+    m._apply_sampling = degenerate
+    for n in {sizes}:
+        c = S.json_constraint(tb, None)
+        gc.collect()
+        tracemalloc.start()
+        t0 = time.perf_counter()
+        toks = list(m.generate_structured(torch.zeros(1, 1, dtype=torch.long), c,
+                                          max_new_tokens=n))
+        dt = time.perf_counter() - t0
+        peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        assert c.is_complete() and len(toks) == n
+        print(n, dt, peak, flush=True)
+''')
+
+
+def test_r2_generate_structured_closing_cost_scales_linearly():
+    """
+    generate_structured (force_complete) appelle completion_tokens() pour CHAQUE token
+    candidat et garde toutes les listes dans `closing_cache` jusqu'à la fin : à la
+    profondeur d, la fermeture fait d tokens, donc Θ(n²) en temps et en mémoire pour un
+    modèle qui imbrique (mesuré, vocabulaire char-level, modèle minuscule :
+    1 000 tokens → 1,5 s / 2,2 Mo ; 3 000 → 15,9 s / 13,7 Mo ; 4 000 → 25,7 s / 22,8 Mo ;
+    10 000 → 197,6 s / 119,6 Mo). Profil à 2 400 tokens : 79 % du temps dans
+    closing_for → completion_tokens, 720 601 ids de tokens retenus dans closing_cache
+    (Σ des longueurs de fermeture). Tripler le budget devrait tripler le coût, pas le
+    décupler.
+    """
+    script = _GEN_SCALING_SCRIPT.format(scratch=ROOT, repo=ROOT,
+                                        sizes=(800, 2400))
+    out = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True,
+                         timeout=900)
+    assert out.returncode == 0, out.stderr[-2000:]
+    rows = [tuple(map(float, line.split())) for line in out.stdout.splitlines()
+            if line and line[0].isdigit()]
+    (n1, t1, p1), (n2, t2, p2) = rows
+    mem_ratio, time_ratio = p2 / p1, t2 / t1
+    assert mem_ratio < 4.5 and time_ratio < 6, (
+        f"×{n2 / n1:.0f} tokens → mémoire ×{mem_ratio:.1f} ({p1 / 1e6:.1f} → {p2 / 1e6:.1f} Mo), "
+        f"temps ×{time_ratio:.1f} ({t1:.1f} → {t2:.1f} s)")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Tour 3
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ── Unions récursives ambiguës : explosion du nombre de configurations ───────
+
+R3_THREAD = {"$defs": {"c": {"anyOf": [
+    {"type": "object", "properties": {"replies": {"type": "array", "items": {"$ref": "#/$defs/c"}},
+                                      "text": {"type": "string"}},
+     "required": ["replies", "text"]},
+    {"type": "object", "properties": {"replies": {"type": "array", "items": {"$ref": "#/$defs/c"}},
+                                      "image": {"type": "string"}},
+     "required": ["replies", "image"]}]}},
+    "$ref": "#/$defs/c"}
+
+R3_TREE = {"$defs": {"node": {"oneOf": [
+    {"type": "object", "properties": {"children": {"type": "array",
+                                                   "items": {"$ref": "#/$defs/node"}},
+                                      "leaf": {"type": "boolean"}}},
+    {"type": "object", "properties": {"children": {"type": "array",
+                                                   "items": {"$ref": "#/$defs/node"}},
+                                      "name": {"type": "string"}}}]}},
+    "$ref": "#/$defs/node"}
+
+
+@pytest.mark.parametrize("case", ["thread_anyOf", "tree_oneOf"])
+def test_r3_recursive_union_configuration_explosion_gpt2(gpt2, case):
+    """
+    Schéma récursif dont les DEUX alternatives d'une union commencent par la même
+    propriété récursive (fil de commentaires : {replies, text} | {replies, image} ;
+    arbre : {children, leaf?} | {children, name?}). Tant que le modèle imbrique, aucune
+    alternative n'est éliminée à aucun niveau : chaque niveau DOUBLE le nombre de
+    configurations (piles distinctes) de l'état → 2^profondeur.
+
+    Mesuré (gpt2, 4 tokens par niveau : '{"' 'repl' 'ies' '":[') :
+      profondeur 10 → 1 024 configurations ; 14 → 16 384 (56 tokens seulement) :
+      is_allowed d'un token sur l'état neuf ≈ 90 ms (cible 0,2 ms), masque neuf ≈ 5,4 s
+      (cible 2 s), RSS +210 Mo ; profondeur 17 → > 9 s par niveau ; 20 → ~1 M
+      configurations, ≈ 8 s PAR OCTET (advance_bytes). Un petit modèle qui boucle sur
+      l'imbrication bloque generate_structured (temps et mémoire non bornés).
+    """
+    enc, tb = gpt2
+    schema, unit = {"thread_anyOf": (R3_THREAD, '{"replies":['),
+                    "tree_oneOf": (R3_TREE, '{"children":[')}[case]
+    c = json_constraint(tb, schema)
+    toks = enc.encode(unit)
+    base = _rss()
+    worst = 0.0
+    for _ in range(14):
+        for t in toks:
+            t0 = time.perf_counter()
+            ok = c.is_allowed(t)            # rejet de generate_structured : état NEUF
+            worst = max(worst, time.perf_counter() - t0)
+            assert ok, (c.generated, tb[t])
+            c.advance(t)
+    t0 = time.perf_counter()
+    mask = c.allowed_mask()
+    t_fresh = time.perf_counter() - t0
+    grown = _rss() - base
+    allowed = mask.nonzero().flatten().tolist()
+    assert allowed and all(viable(c.generated + tb[i]) for i in allowed)
+    closing = c.completion_tokens()
+    assert closing is not None
+    d = c.clone()
+    for t in closing:
+        d.advance(t)
+    assert d.is_terminal()
+    assert validate_instance(json.loads(d.generated), schema) == []
+    assert t_fresh < 2.0 and worst < 0.01 and grown < 100e6, (
+        f"profondeur 14 : {len(c.state)} configurations, masque neuf {t_fresh:.1f} s, "
+        f"is_allowed {worst * 1000:.0f} ms, RSS +{grown / 1e6:.0f} Mo")
+
+
+# ── Grand enum à préfixe commun : coût par token linéaire en nb de valeurs ───
+
+def test_r3_large_enum_shared_prefix_per_token_cost_gpt2(gpt2):
+    """
+    Enum de 8 000 chaînes à long préfixe commun (identifiants, URL…) : chaque valeur
+    est une configuration _F_CSTR séparée, avancée octet par octet → chaque octet du
+    préfixe commun reconstruit un frozenset de 8 000 piles. Générer 5 valeurs (95
+    tokens gpt2, un is_allowed + advance par pas comme le rejet de
+    generate_structured) : mesuré 7,3 s, jusqu'à 880 ms pour UN token, contre 0,05 s
+    pour les mêmes octets avec un enum de 200 valeurs (×40 valeurs → ×140 temps).
+    is_allowed moyen sur l'état '"https://api.example.com/v1/resources/' : 0,36 ms
+    (cible 0,2 ms).
+    """
+    enc, tb = gpt2
+    vals = [f"https://api.example.com/v1/resources/{i:05d}/details" for i in range(8000)]
+    schema = {"type": "array", "items": {"enum": vals}, "maxItems": 5}
+    c = json_constraint(tb, schema)
+    doc = json.dumps(vals[17:22])
+    per = []
+    t_all = time.perf_counter()
+    for t in enc.encode(doc):
+        t0 = time.perf_counter()
+        assert c.is_allowed(t), (c.generated, tb[t])
+        c.advance(t)
+        per.append(time.perf_counter() - t0)
+    total = time.perf_counter() - t_all
+    assert c.is_terminal() and json.loads(c.generated) == vals[17:22]
+    assert max(per) < 0.1 and total < 2.0, (
+        f"{len(per)} tokens : {total:.1f} s au total, pire token {max(per) * 1000:.0f} ms")
+
+
+# ── Masque exact : variantes max_whitespace / max_number_digits, structures croisées ─
+
+R3_SCHEMAS = [
+    {"type": "array", "items": {"enum": [1, 12, 123, -1, 1.5, 1e5, 0, -0.0]}},
+    {"type": "object", "properties": {"a": {"type": "integer"}, "ab": {"type": "integer"},
+                                      "abc": {"type": "string"}}, "required": ["abc"]},
+    {"anyOf": [{"type": "object", "properties": {"k": {"const": 1}}, "required": ["k"]},
+               {"type": "object", "properties": {"k": {"const": 12}}, "required": ["k"]},
+               {"type": "object", "properties": {"kk": {"type": "array", "items": {"type": "null"}}},
+                "required": ["kk"]}]},
+    {"type": "array", "items": {"type": "array", "items": {"type": "array", "items": {"type": "integer"},
+                                                           "maxItems": 2}, "maxItems": 2},
+     "maxItems": 3},
+    {"const": {"a": [1, {"b": "é\"\\"}], "c": None}},
+    {"type": "object", "additionalProperties": {"type": "object",
+                                                "additionalProperties": {"type": "integer"}}},
+    {"type": "array", "items": {"type": "string", "maxLength": 2}, "minItems": 1, "maxItems": 3},
+    {"type": "object", "properties": {"éé": {"type": "boolean"}, "\\": {"type": "null"},
+                                      "/": {"type": "number"}}, "required": ["/"]},
+    {"type": ["integer", "string", "null"], "maxLength": 3},
+    {"enum": ["a", "ab", "abc", "b\"", "—", "\U0001F600x"]},
+]
+
+
+@pytest.mark.parametrize("si", range(len(R3_SCHEMAS)))
+def test_r3_mask_vs_fresh_matcher_ws_and_digit_limits_gpt2(gpt2, si):
+    """
+    Régression : masque == force brute d'un matcher NEUF pour max_whitespace 0 / 1 / 4 et
+    max_number_digits 2 / 20 (tokens gpt2 à cheval : '":[', '1,', '0]', '"}', ' "'…),
+    puis completion_tokens → instance valide.
+    """
+    enc, tb = gpt2
+    schema = R3_SCHEMAS[si]
+    rng = random.Random(300 + si)
+    for mws, dig in [(4, 20), (0, 20), (1, 2)]:
+        m = JSONSchemaMatcher(schema, max_whitespace=mws, max_number_digits=dig, filler='-')
+        c = TokenConstraint(m, tb)
+        for _ in range(3):
+            c.reset()
+            for _ in range(rng.randint(0, 25)):
+                ids = c.allowed_mask().nonzero().flatten().tolist()
+                if not ids:
+                    break
+                pool = [i for i in ids if not _LETTERS.search(tb[i])] if rng.random() < .75 else ids
+                c.advance(rng.choice(pool or ids))
+            mask = c.allowed_mask().tolist()
+            fresh = JSONSchemaMatcher(schema, max_whitespace=mws, max_number_digits=dig)
+            st = fresh.advance_bytes(fresh.initial_state, c.generated)
+            assert st is not None
+            bad = [(i, tb[i]) for i in range(len(tb))
+                   if (tb[i] is not None and fresh.advance_bytes(st, tb[i]) is not None) != mask[i]]
+            assert not bad, (schema, mws, dig, c.generated, bad[:5])
+            toks = c.completion_tokens()
+            assert toks is not None, (schema, c.generated)
+            d = c.clone()
+            for t in toks:
+                assert d.is_allowed(t)
+                d.advance(t)
+            assert d.is_complete()
+            assert validate_instance(json.loads(d.generated), schema) == [], d.generated
+
+
+# ── completion_tokens : recherche A* avec des vocabulaires char-level lacunaires ─
+
+def _r3_vocab(chars):
+    chars = sorted(set(chars))
+    return chars, token_bytes_from_itos(dict(enumerate(chars)), len(chars))
+
+
+_R3_ASCII = [chr(i) for i in range(32, 127)] + ['\n']
+
+
+@pytest.mark.parametrize("case", ["key_e_acute", "key_no_lower_hex", "items3000_no_zero",
+                                  "minlen_then_const", "pending_u_only_zero", "enum_no_one",
+                                  "enum_none", "deep_no_bracket"])
+def test_r3_completion_tokens_search_char_vocab_missing_chars(case):
+    """
+    Régression : la plus courte complétion en octets est inécrivable (caractère absent du
+    vocabulaire) → la recherche A* trouve une AUTRE fermeture valide ('é' → \\u00E9 en
+    majuscules si a-f manquent, '0' → '1' sur 3 000 éléments, \\u0 → \\u0000…) ou
+    renvoie None quand aucune n'existe ('1' absent pour enum [1], ']' absent).
+    """
+    E_KEY = {"type": "object", "properties": {"é": {"type": "integer"}}, "required": ["é"]}
+    spec = {
+        "key_e_acute": (_R3_ASCII, E_KEY, '', True),
+        "key_no_lower_hex": ([x for x in _R3_ASCII if x not in 'abcdef'], E_KEY, '', True),
+        "items3000_no_zero": ([x for x in _R3_ASCII if x != '0'],
+                              {"type": "array", "items": {"type": "integer"}, "minItems": 3000},
+                              '[1,2', True),
+        "minlen_then_const": (_R3_ASCII, {"type": "object", "properties": {
+            "s": {"type": "string", "minLength": 2000}, "k": {"const": "é"}},
+            "required": ["s", "k"]}, '{"s":"x', True),
+        "pending_u_only_zero": ([x for x in _R3_ASCII if x not in '123456789abcdefABCDEF'],
+                                {"type": "string"}, '"\\u0', True),
+        "enum_no_one": ([x for x in _R3_ASCII if x != '1'], {"enum": [1, 2]}, '', True),
+        "enum_none": ([x for x in _R3_ASCII if x != '1'], {"enum": [1]}, '', False),
+        "deep_no_bracket": ([x for x in _R3_ASCII if x != ']'], None, '[' * 50, False),
+    }[case]
+    chars, schema, prefix, possible = spec[0], spec[1], spec[2], spec[3]
+    chars, tb = _r3_vocab(chars)
+    c = json_constraint(tb, schema)
+    for ch in prefix:
+        c.advance(chars.index(ch))
+    t0 = time.perf_counter()
+    toks = c.completion_tokens()
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 5.0, elapsed
+    if not possible:
+        assert toks is None
+        return
+    assert toks is not None
+    d = c.clone()
+    for t in toks:
+        assert d.is_allowed(t)
+        d.advance(t)
+    assert d.is_complete()
+    inst = json.loads(d.generated)
+    if schema is not None:
+        assert validate_instance(inst, schema) == [], d.generated
+
+
+def test_r3_shortest_completion_never_uses_bfs_fallback_char_vocab():
+    """
+    Régression : sur des marches aléatoires (paires de substitution en cours, UTF-8
+    partiel impossible en char-level mais échappements partiels oui, prefixItems +
+    minItems, chaînes constantes à échappements), la complétion analytique est
+    toujours vérifiée — le BFS de secours (borné à 512 octets) ne sert jamais.
+    """
+    chars, tb = _char_vocab()
+    schemas = [
+        {"type": "string", "minLength": 3, "maxLength": 3},
+        {"type": "array", "prefixItems": [{"type": "string", "minLength": 2},
+                                          {"enum": ["é", "\\u"]}],
+         "minItems": 4, "items": {"type": "integer"}},
+        {"enum": ["ab", "a\"", "\U0001F600", "éé", "x\\y", "\x01"]},
+        {"anyOf": [{"type": "string", "maxLength": 1}, {"type": "string", "minLength": 3}]},
+        {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2},
+         "minItems": 3},
+        {"$defs": {"n": {"type": "array", "items": {"$ref": "#/$defs/n"}, "minItems": 1,
+                         "maxItems": 1},
+                   "m": {"anyOf": [{"$ref": "#/$defs/n"}, {"type": "null"}]}},
+         "type": "array", "items": {"$ref": "#/$defs/m"}},
+    ]
+    rng = random.Random(9)
+    for schema in schemas:
+        c = json_constraint(tb, schema)
+        m = c.matcher
+        for _ in range(120):
+            c.reset()
+            for _ in range(rng.randint(0, 30)):
+                ids = c.allowed_mask().nonzero().flatten().tolist()
+                if not ids:
+                    break
+                c.advance(rng.choice(ids))
+            assert m.shortest_completion(c.state) is not None, (schema, c.generated)
+        assert m._fallbacks == 0, schema
