@@ -1058,8 +1058,10 @@ class nanoPOPIXA(nn.Module):
         sans top-k/top-p). Si le JSON est déjà complet et que le modèle sort de la
         grammaire → fin naturelle.
 
-        force_complete : quand le budget restant ne suffit plus, on ferme le JSON avec
-        la complétion la plus courte → sortie toujours valide (si le budget le permet).
+        force_complete : à chaque pas, la complétion la plus courte doit tenir dans le
+        budget restant — un token qui la rendrait trop longue est banni puis re-tiré, et
+        quand le budget est juste suffisant on ferme le JSON. Sortie toujours complète
+        si max_new_tokens >= len(constraint.completion_tokens()) au départ.
 
         Yield : int (token généré). À la fin, constraint.is_complete() indique si le JSON
         est complet.
@@ -1074,49 +1076,61 @@ class nanoPOPIXA(nn.Module):
         dec = None
         try:
             dec = _Decoder(self, idx, initial_past_kvs)
-            window = 0
-            if force_complete:
-                first  = closing_for(constraint)
-                window = 32 + 2 * (len(first) if first is not None else 0)
+
+            def emit(tokens):
+                nonlocal produced
+                for t in tokens:
+                    constraint.advance(t)
+                    dec.push(t)
+                    produced += 1
+                    yield t
 
             produced = 0
             while produced < max_new_tokens and not constraint.is_terminal():
                 remaining = max_new_tokens - produced
+                # Invariant (force_complete) : la fermeture la plus courte tient toujours
+                # dans le budget restant → plus de marge du tout : on ferme maintenant
+                current = closing_for(constraint) if force_complete else None
+                if current is not None and len(current) >= remaining:
+                    yield from emit(current[:remaining])
+                    break
+
                 logits = dec.advance()
                 probs  = self._apply_sampling(logits, temperature, top_k, top_p,
                                               repetition_penalty, dec.idx)
                 tok = torch.multinomial(probs, num_samples=1)[0, 0].item()
-
                 if not constraint.is_allowed(tok):
                     if constraint.is_complete():
                         break  # JSON complet et le modèle veut s'arrêter
-                    mask = constraint.allowed_mask()
-                    if not bool(mask.any()):
-                        break  # aucun token du vocabulaire ne peut continuer
-                    probs = self._apply_sampling(logits, temperature, top_k, top_p,
-                                                 repetition_penalty, dec.idx, mask=mask)
-                    tok = torch.multinomial(probs, num_samples=1)[0, 0].item()
+                    tok = None
 
-                # Fin de budget en vue : le token choisi laisse-t-il de quoi fermer le JSON ?
-                if force_complete and remaining <= window:
-                    current = closing_for(constraint)
+                # Tirage masqué si besoin ; un token qui rendrait la fermeture impossible
+                # avec le budget restant est banni puis on re-tire (jamais de JSON tronqué)
+                banned = []
+                for _ in range(16):
+                    if tok is None:
+                        mask = constraint.allowed_mask().clone()
+                        if banned:
+                            mask[banned] = False
+                        if not bool(mask.any()):
+                            break  # plus aucun token possible
+                        probs = self._apply_sampling(logits, temperature, top_k, top_p,
+                                                     repetition_penalty, dec.idx, mask=mask)
+                        tok = torch.multinomial(probs, num_samples=1)[0, 0].item()
+                    if current is None:
+                        break  # fermeture inexprimable avec ce vocabulaire : meilleur effort
+                    nxt = constraint.clone()
+                    nxt.advance(tok)
+                    after = closing_for(nxt)
+                    if after is not None and len(after) <= remaining - 1:
+                        break  # token abordable
+                    banned.append(tok)
+                    tok = None
+
+                if tok is None:
                     if current is not None:
-                        nxt = constraint.clone()
-                        nxt.advance(tok)
-                        after = closing_for(nxt)
-                        if after is None or len(after) > remaining - 1:
-                            for t in current[:remaining]:
-                                constraint.advance(t)
-                                dec.push(t)
-                                produced += 1
-                                yield t
-                            break
-                    # current None : le vocabulaire ne sait pas écrire la fermeture la plus
-                    # courte depuis cet état → on continue l'échantillonnage (meilleur effort)
-
-                constraint.advance(tok)
-                dec.push(tok)
-                produced += 1
-                yield tok
+                        yield from emit(current[:remaining])
+                    break
+                yield from emit([tok])
         finally:
             _store_cache(dec, cache_ref)
