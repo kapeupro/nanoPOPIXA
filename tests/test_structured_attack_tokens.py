@@ -825,7 +825,9 @@ _DEEP_SCRIPT = textwrap.dedent('''
     for t in toks:
         c.advance(t)
     assert c.is_complete()
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+    # VmHWM (pic RSS de CE processus) : ru_maxrss hérite du pic du pytest parent après fork
+    with open("/proc/self/status") as f:
+        peak = next(int(l.split()[1]) * 1024 for l in f if l.startswith("VmHWM:"))
     print(peak - base, time.perf_counter() - t0)
 ''')
 
