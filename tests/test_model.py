@@ -230,3 +230,38 @@ def test_speculative_preserves_sampling_distribution():
 def test_draft_ngram():
     assert nanoPOPIXA._draft_ngram([1, 2, 3, 9, 1, 2, 3], 3) == [9, 1, 2]
     assert nanoPOPIXA._draft_ngram([1, 2, 3], 3) == []
+
+
+class _OpenConstraint:
+    """Contrainte factice : tout token est permis, jamais complète, fermeture inconnue."""
+
+    def __init__(self, vocab_size):
+        self.state, self.vocab_size = 0, vocab_size
+
+    def is_terminal(self):
+        return False
+
+    def is_complete(self):
+        return False
+
+    def is_allowed(self, tok):
+        return True
+
+    def allowed_mask(self):
+        return torch.ones(self.vocab_size, dtype=torch.bool)
+
+    def advance(self, tok):
+        self.state += 1
+
+    def clone(self):
+        c = _OpenConstraint(self.vocab_size)
+        c.state = self.state
+        return c
+
+    def completion_tokens(self):
+        return None
+
+
+def test_structured_keeps_sampling_when_closing_is_unknown(model):
+    toks = list(model.generate_structured(torch.tensor([[1]]), _OpenConstraint(65), max_new_tokens=50))
+    assert len(toks) == 50     # pas d'arrêt prématuré quand la fermeture est inexprimable

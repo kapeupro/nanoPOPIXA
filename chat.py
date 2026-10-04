@@ -381,7 +381,10 @@ def report_json(constraint, schema) -> None:
     except ValueError as e:
         print(ERR_C + f"  ✗ JSON invalide : {e}" + R)
         return
-    errors = structured.validate_instance(instance, schema)
+    try:
+        errors = structured.validate_instance(instance, schema)
+    except RecursionError:
+        errors = ["document trop profond pour être validé"]
     if errors:
         print(ERR_C + "  ✗ JSON hors schéma : " + "; ".join(errors[:3]) + R)
     else:

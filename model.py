@@ -1099,16 +1099,20 @@ class nanoPOPIXA(nn.Module):
 
                 # Fin de budget en vue : le token choisi laisse-t-il de quoi fermer le JSON ?
                 if force_complete and remaining <= window:
-                    nxt = constraint.clone()
-                    nxt.advance(tok)
-                    after = closing_for(nxt)
-                    if after is None or len(after) > remaining - 1:
-                        for t in (closing_for(constraint) or [])[:remaining]:
-                            constraint.advance(t)
-                            dec.push(t)
-                            produced += 1
-                            yield t
-                        break
+                    current = closing_for(constraint)
+                    if current is not None:
+                        nxt = constraint.clone()
+                        nxt.advance(tok)
+                        after = closing_for(nxt)
+                        if after is None or len(after) > remaining - 1:
+                            for t in current[:remaining]:
+                                constraint.advance(t)
+                                dec.push(t)
+                                produced += 1
+                                yield t
+                            break
+                    # current None : le vocabulaire ne sait pas écrire la fermeture la plus
+                    # courte depuis cet état → on continue l'échantillonnage (meilleur effort)
 
                 constraint.advance(tok)
                 dec.push(tok)
