@@ -60,3 +60,11 @@ def test_train_save_resume_and_chat(tmp_path):
 def test_train_reports_bad_data_dir(tmp_path):
     r = _train(tmp_path, "--data_dir", "inexistant", "--max_iters", "1")
     assert r.returncode == 1 and "manquant" in r.stdout
+
+
+def test_resume_rewrites_log_header(tmp_path):
+    (tmp_path / "input.txt").write_text("abcdefgh " * 900, encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2").returncode == 0
+    assert _train(tmp_path, "--max_iters", "4", "--resume").returncode == 0
+    headers = [l for l in (tmp_path / "train.log").read_text().splitlines() if l.startswith("#")]
+    assert headers[-1].startswith("# max_iters=4")

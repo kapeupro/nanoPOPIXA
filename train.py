@@ -269,6 +269,7 @@ os.makedirs(out_dir, exist_ok=True)
 # ── Reprise depuis checkpoint ──────────────────────────────────────────────────
 # "iter" = nombre d'itérations d'entraînement DÉJÀ effectuées au moment de la sauvegarde
 iter_start = 0
+resume_ckpt_loaded = resume_ckpt is not None
 if resume_ckpt is not None:
     if resume_ckpt["config"].vocab_size != vocab_size:
         print(f"❌ Vocabulaire du checkpoint ({resume_ckpt['config'].vocab_size}) ≠ données "
@@ -317,11 +318,11 @@ print(f"\n🚀 Démarrage entraînement nanoPOPIXA [{args.size}]...\n")
 t0     = time.time()
 t_last = t0
 
-# Log propre à chaque run (sauf reprise)
-if not args.resume:
-    with open("train.log", "w", encoding="utf-8") as f:
-        f.write(f"# max_iters={max_iters} eval_interval={eval_interval}"
-                f" batch_size={batch_size} block_size={block_size}\n")
+# Log propre à chaque run ; en reprise on AJOUTE un en-tête (le monitor garde le dernier :
+# max_iters / batch peuvent avoir changé)
+with open("train.log", "a" if resume_ckpt_loaded else "w", encoding="utf-8") as f:
+    f.write(f"# max_iters={max_iters} eval_interval={eval_interval}"
+            f" batch_size={batch_size} block_size={block_size}\n")
 
 for iter in range(iter_start, max_iters):
 

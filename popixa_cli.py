@@ -3,6 +3,7 @@ nanoPOPIXA — Point d'entrée CLI principal
 Accessible via la commande `popixa` après `pip install -e .`
 """
 
+import re
 import sys
 import shlex
 import argparse
@@ -196,6 +197,21 @@ def cmd_gen(args):
     import torch
     from chat import load_model, load_token_bytes
 
+    def fail(msg: str) -> None:
+        print(ERR_C + f"  ✗ {msg}" + R, file=sys.stderr)
+        sys.exit(1)
+
+    # Schéma validé AVANT de charger le modèle (erreur immédiate, code de sortie 1)
+    structured_mode = args.json or args.schema is not None
+    schema = None
+    if structured_mode:
+        import structured
+        try:
+            schema = structured.load_schema(args.schema) if args.schema is not None else None
+            structured.JSONSchemaMatcher(schema)
+        except (ValueError, OSError) as e:
+            fail(f"Structured outputs : {e}")
+
     if torch.cuda.is_available():
         device = "cuda"
     elif torch.backends.mps.is_available():
@@ -211,23 +227,25 @@ def cmd_gen(args):
     ids = encode(args.prompt) if args.prompt else []
     ctx = torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)  # vide → amorce token 0
 
-    if args.json or args.schema:
-        import structured
-        try:
-            schema = structured.load_schema(args.schema) if args.schema else None
-            constraint = structured.json_constraint(
-                load_token_bytes(ckpt, model.config.vocab_size), schema
-            )
-        except (ValueError, OSError) as e:
-            print(ERR_C + f"  ✗ Structured outputs : {e}" + R, file=sys.stderr)
-            return
+    if structured_mode:
+        constraint = structured.json_constraint(
+            load_token_bytes(ckpt, model.config.vocab_size), schema
+        )
+        closing = constraint.completion_tokens()
+        if closing is None:
+            fail("le vocabulaire du modèle ne permet pas d'écrire un JSON conforme à ce schéma")
+        if len(closing) > args.tokens:
+            fail(f"--tokens {args.tokens} insuffisant : il faut au moins {len(closing)} tokens "
+                 "pour un JSON complet")
         tokens = list(model.generate_structured(
             ctx, constraint, max_new_tokens=args.tokens, temperature=args.temp,
             top_k=args.top_k, top_p=args.top_p, repetition_penalty=args.penalty,
         ))
-        print(decode(tokens))
         if not constraint.is_complete():
-            print(ERR_C + "  ⚠ JSON incomplet — augmente --tokens" + R, file=sys.stderr)
+            # Jamais de JSON tronqué sur stdout (ex. popixa gen --json > sortie.json)
+            print(decode(tokens), file=sys.stderr)
+            fail("JSON incomplet — augmente --tokens")
+        print(decode(tokens))
         return
 
     tokens = list(model.generate_stream(
@@ -279,7 +297,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── monitor ───────────────────────────────────────────────────────
     p_mon = sub.add_parser("monitor")
     p_mon.add_argument("--log",     default="train.log")
-    p_mon.add_argument("--refresh", type=float, default=1.0)
+    p_mon.add_argument("--refresh", type=_positive_float, default=1.0)
 
     # ── scrape ────────────────────────────────────────────────────────
     p_scr = sub.add_parser("scrape")
@@ -321,12 +339,13 @@ _DISPATCH = {
 
 
 def _run_command(tokens: list[str]) -> None:
-    """Parse et exécute une liste de tokens (ex. ["chat", "--temp", "0.9"])."""
+    """
+    Parse et exécute une liste de tokens (ex. ["chat", "--temp", "0.9"]).
+    Les erreurs d'arguments lèvent SystemExit(2) (code de sortie correct en mode direct ;
+    le shell interactif l'intercepte).
+    """
     parser = _build_parser()
-    try:
-        args = parser.parse_args(tokens)
-    except SystemExit:
-        return
+    args = parser.parse_args(tokens)
     if args.command not in _DISPATCH:
         print(HELP)
         return
@@ -360,11 +379,16 @@ def run_shell() -> None:
         if not line:
             continue
 
-        # Découpe en tokens — fallback sur split() si apostrophe française etc.
+        # Découpe en tokens — une apostrophe française non fermée (aujourd'hui, l'IA…)
+        # est échappée puis on réessaie, sans jamais laisser de guillemets parasites
         try:
             tokens = shlex.split(line)
         except ValueError:
-            tokens = line.split()
+            try:
+                tokens = shlex.split(re.sub(r"(\w)'(\w)", r"\1\\'\2", line))
+            except ValueError:
+                print(ERR_C + "  ✗ Guillemet non fermé — entoure le texte de guillemets doubles" + R)
+                continue
 
         cmd = tokens[0]
 
@@ -388,21 +412,37 @@ def run_shell() -> None:
         except SystemExit:
             # Une commande qui abandonne (ex. chat sans checkpoint) ne ferme pas le shell
             pass
+        except KeyboardInterrupt:
+            # Ctrl+C arrête la commande en cours (train, gen, monitor…), pas le shell
+            print(R + "\n" + INFO_C + "  [Interrompu]" + R)
+        except Exception as e:
+            print(R + ERR_C + f"  ✗ {cmd} : {type(e).__name__}: {e}" + R)
 
 
 # ─── Point d'entrée ───────────────────────────────────────────────────────────
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+    argv = sys.argv[1:]
+    if not argv:
         from splash import splash
         splash()
         run_shell()
         return
 
-    if sys.argv[1] == "chat":
+    if argv[0] in ("-h", "--help", "help", "h", "?"):
+        print(HELP)
+        return
+    if argv[0] in ("exit", "quit", "q"):
+        return
+
+    if argv[0] == "chat":
         from splash import splash
         splash()
 
-    _run_command(sys.argv[1:])
+    try:
+        _run_command(argv)
+    except KeyboardInterrupt:
+        print(R + "\n" + INFO_C + "  [Interrompu]" + R)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

@@ -92,7 +92,7 @@ Dépendances : `torch >= 2.0`, `numpy`, `tiktoken`
 # 1. Télécharger et préparer un dataset (~1 MB)
 popixa prep --dataset shakespeare
 
-# 2. Entraîner un modèle nano (~2M params)
+# 2. Entraîner un modèle nano (~0.9M params hors embeddings)
 #    CPU : ~10-15 min  |  Apple Silicon MPS : ~3-5 min  |  GPU CUDA : ~1-2 min
 popixa train --size nano --data_dir data/
 
@@ -124,7 +124,7 @@ popixa collect SOURCE_DIR  → assembler du code source en corpus
 ```bash
 popixa train --size nano --data_dir data/       # modèle léger, rapide
 popixa train --data_dir data/ --resume          # reprendre depuis checkpoint
-popixa train --size nano --longrope             # rope_base=500k (la fenêtre reste block_size)
+popixa train --size nano --data_dir data/ --longrope   # rope_base=500k (la fenêtre reste block_size)
 ```
 
 > `--resume` reprend l'architecture du checkpoint (un `--size`/`--longrope` différent est
