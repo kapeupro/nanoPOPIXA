@@ -10,6 +10,7 @@ Usage :
 import os
 import pickle
 import argparse
+import urllib.error
 import urllib.request
 
 import numpy as np
@@ -17,10 +18,18 @@ import numpy as np
 
 DATASETS = {
     "shakespeare": "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt",
-    "moliere":     "https://www.gutenberg.org/cache/epub/4106/pg4106.txt",
-    "hugo":        "https://www.gutenberg.org/cache/epub/1952/pg1952.txt",
-    "bible":       "https://raw.githubusercontent.com/mxw/grmr/master/src/finley/data/bible.txt",
-    "linux":       "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/linux/input.txt",
+    # Gutenberg — textes français vérifiés (Molière, Œuvres complètes t.1 · Les Misérables t.I)
+    "moliere":     "https://www.gutenberg.org/cache/epub/40086/pg40086.txt",
+    "hugo":        "https://www.gutenberg.org/cache/epub/17489/pg17489.txt",
+    "bible":       "https://www.gutenberg.org/cache/epub/10/pg10.txt",       # King James Version
+    # Extraits du noyau Linux (tag v6.6 figé → URLs stables)
+    "linux": [
+        "https://raw.githubusercontent.com/torvalds/linux/v6.6/kernel/sched/core.c",
+        "https://raw.githubusercontent.com/torvalds/linux/v6.6/kernel/fork.c",
+        "https://raw.githubusercontent.com/torvalds/linux/v6.6/mm/memory.c",
+        "https://raw.githubusercontent.com/torvalds/linux/v6.6/fs/namei.c",
+        "https://raw.githubusercontent.com/torvalds/linux/v6.6/net/ipv4/tcp.c",
+    ],
     "javascript": [
         "https://unpkg.com/lodash@4.17.21/lodash.js",
         "https://unpkg.com/jquery@3.7.1/dist/jquery.js",
@@ -45,7 +54,8 @@ def _download_multi(urls: list, filepath: str) -> None:
     for url in urls:
         name = url.rstrip("/").split("/")[-1]
         print(f"  Téléchargement : {url}")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".js") as tmp:
+        suffix = os.path.splitext(name)[1] or ".txt"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             urllib.request.urlretrieve(url, tmp.name)
             with open(tmp.name, "r", encoding="utf-8", errors="replace") as f:
                 parts.append(f"// -- {name} --\n" + f.read())
@@ -98,10 +108,14 @@ def prepare(dataset: str = "shakespeare", data_dir: str = "data",
 
     if dataset in DATASETS:
         urls = DATASETS[dataset]
-        if isinstance(urls, list):
-            _download_multi(urls, raw_path)
-        else:
-            _download(urls, raw_path)
+        try:
+            if isinstance(urls, list):
+                _download_multi(urls, raw_path)
+            else:
+                _download(urls, raw_path)
+        except (urllib.error.URLError, OSError) as e:
+            print(f"  ✗ Téléchargement impossible ({dataset}) : {e}")
+            return
     elif os.path.isfile(dataset):
         raw_path = dataset
         print(f"  Fichier local : {dataset}")

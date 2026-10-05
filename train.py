@@ -7,6 +7,7 @@ Usage :
 """
 
 import os
+import sys
 import math
 import time
 import pickle
@@ -21,7 +22,7 @@ try:
 except ImportError:
     _HAS_TIKTOKEN = False
 
-from model import nanoPOPIXA, POPIXAConfig
+from model import nanoPOPIXA, POPIXAConfig, checkpoint_v1_error
 
 
 # ─────────────────────────────────────────
@@ -33,9 +34,12 @@ parser.add_argument("--data_dir",  default=None,        help="Dossier data/ cré
 parser.add_argument("--input",     default="input.txt", help="Fichier texte brut (si pas de --data_dir)")
 parser.add_argument("--resume",    action="store_true", help="Reprendre depuis le dernier checkpoint")
 parser.add_argument("--size",      default="medium",    choices=["nano","small","medium"],
-                    help="Taille du modèle : nano (~2M), small (~10M), medium (~85M)")
+                    help="Taille du modèle (params hors embeddings) : nano (~0.9M), small (~10M), medium (~85M)")
 parser.add_argument("--longrope",  action="store_true",
-                    help="LongRoPE : rope_base=500_000 → fenêtre contexte ~10× (beta context-1m)")
+                    help="LongRoPE : rope_base=500_000 — rotations plus lentes, meilleure base pour "
+                         "étendre le contexte plus tard (la fenêtre reste block_size)")
+parser.add_argument("--max_iters",  type=int, default=None, help="Surcharge du nb d'itérations du preset")
+parser.add_argument("--batch_size", type=int, default=None, help="Surcharge de la taille de batch du preset")
 args = parser.parse_args()
 
 
@@ -54,6 +58,11 @@ _SIZES = {
 }
 (block_size, n_layer, n_head, n_embd,
  batch_size, max_iters, learning_rate, warmup_iters) = _SIZES[args.size]
+if args.max_iters is not None:
+    max_iters    = max(1, args.max_iters)
+    warmup_iters = min(warmup_iters, max(1, max_iters // 10))
+if args.batch_size is not None:
+    batch_size = max(1, args.batch_size)
 
 dropout    = 0.1
 min_lr     = learning_rate / 10
@@ -79,13 +88,44 @@ print(f"🚀 Device détecté : {device.upper()}")
 
 # Guard OOM — medium sur MPS dépasse facilement les 20 GB
 # (85M params × batch 8 × block 1024 × bfloat16 ≈ 20+ GB activations)
-if device == "mps" and args.size == "medium":
+if device == "mps" and args.size == "medium" and "PYTORCH_MPS_HIGH_WATERMARK_RATIO" not in os.environ:
     print("⚠️  Attention : --size medium peut provoquer un OOM sur Apple Silicon (>20 GB MPS).")
-    print("   Recommandation : utilise --size small (~10M params, ~3 GB) ou --size nano (~2M params).")
+    print("   Recommandation : utilise --size small (~10M params, ~3 GB) ou --size nano (~0.9M params).")
     print("   Tu peux aussi réduire le batch en éditant batch_size dans train.py.")
     print("   Pour forcer quand même : relance avec PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 popixa train ...")
     import sys as _sys
     _sys.exit(1)
+
+
+rope_base = 500_000 if args.longrope else 10_000
+
+# ── Reprise : l'architecture vient du checkpoint, pas de --size ───────────────
+# (sinon load_state_dict plante si --size diffère, ou les tables RoPE du checkpoint
+#  écrasent silencieusement un --longrope différent)
+ckpt_path   = os.path.join(out_dir, "checkpoint.pt")
+resume_ckpt = None
+if args.resume:
+    if os.path.exists(ckpt_path):
+        resume_ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        v1_error = checkpoint_v1_error(resume_ckpt.get("model", {}))
+        if v1_error:
+            print(f"❌ {v1_error}")
+            sys.exit(1)
+        ck = resume_ckpt["config"]
+        ck_rope = getattr(ck, "rope_base", 10_000)
+        if (ck.block_size, ck.n_layer, ck.n_head, ck.n_embd) != (block_size, n_layer, n_head, n_embd):
+            print(f"⚠️  Architecture du checkpoint (block {ck.block_size}, {ck.n_layer} couches, "
+                  f"{ck.n_head} têtes, embd {ck.n_embd}) ≠ --size {args.size} → on garde le checkpoint")
+        if ck_rope != rope_base:
+            print(f"⚠️  rope_base du checkpoint ({ck_rope}) ≠ demandé ({rope_base}) → on garde le checkpoint")
+        block_size, n_layer, n_head, n_embd = ck.block_size, ck.n_layer, ck.n_head, ck.n_embd
+        rope_base = ck_rope
+        # Même source de données que l'entraînement initial si --data_dir est omis
+        if args.data_dir is None and resume_ckpt.get("data_dir"):
+            args.data_dir = resume_ckpt["data_dir"]
+            print(f"📂 Données du checkpoint : {args.data_dir}")
+    else:
+        print("⚠️  Aucun checkpoint trouvé — démarrage depuis 0")
 
 
 # ─────────────────────────────────────────
@@ -100,6 +140,8 @@ def get_lr(it):
     if it > lr_decay_iters:
         return min_lr
     # 3. Cosine decay entre warmup et lr_decay_iters
+    if lr_decay_iters <= warmup_iters:
+        return learning_rate
     decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (learning_rate - min_lr)
@@ -111,7 +153,16 @@ def get_lr(it):
 
 meta = {}   # initialisé vide — peuplé selon le mode de données
 
-if args.data_dir and os.path.exists(os.path.join(args.data_dir, "train.bin")):
+if args.data_dir:
+    _missing = [f for f in ("train.bin", "val.bin", "meta.pkl")
+                if not os.path.exists(os.path.join(args.data_dir, f))]
+    if _missing:
+        print(f"❌ {args.data_dir.rstrip('/')}/ incomplet — fichier(s) manquant(s) : {', '.join(_missing)}")
+        print("   Prépare d'abord les données : popixa prep --dataset shakespeare --data_dir "
+              f"{args.data_dir}")
+        sys.exit(1)
+
+if args.data_dir:
     # Données binaires pré-traitées (data_prep.py)
     meta_path = os.path.join(args.data_dir, "meta.pkl")
     with open(meta_path, "rb") as f:
@@ -141,6 +192,10 @@ if args.data_dir and os.path.exists(os.path.join(args.data_dir, "train.bin")):
 
 else:
     # Mode texte brut (input.txt) — tokenisation caractère
+    if not os.path.exists(args.input):
+        print(f"❌ {args.input} introuvable — utilise --data_dir data/ (après popixa prep) "
+              "ou fournis un fichier texte avec --input")
+        sys.exit(1)
     with open(args.input, "r", encoding="utf-8") as f:
         text = f.read()
     chars      = sorted(set(text))
@@ -157,6 +212,13 @@ else:
     print(f"Texte brut chargé : {len(text):,} caractères | vocab {vocab_size}")
 
 print(f"Vocabulaire : {vocab_size} tokens | Train : {len(train_data):,} | Val : {len(val_data):,}")
+
+
+for _name, _d in (("train", train_data), ("val", val_data)):
+    if len(_d) <= block_size:
+        print(f"❌ Split {_name} trop court ({len(_d)} tokens) pour block_size={block_size} "
+              f"— utilise plus de données ou un --size plus petit")
+        sys.exit(1)
 
 
 def get_batch(split):
@@ -186,9 +248,8 @@ def estimate_loss(model):
 # Initialisation du modèle
 # ─────────────────────────────────────────
 
-rope_base = 500_000 if args.longrope else 10_000
-if args.longrope:
-    print("🔭 LongRoPE activé — rope_base=500_000 (contexte ~10× étendu)")
+if rope_base != 10_000:
+    print(f"🔭 LongRoPE — rope_base={rope_base:,} (fenêtre de contexte : {block_size} tokens)")
 
 config = POPIXAConfig(
     block_size=block_size,
@@ -206,18 +267,47 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 os.makedirs(out_dir, exist_ok=True)
 
 # ── Reprise depuis checkpoint ──────────────────────────────────────────────────
+# "iter" = nombre d'itérations d'entraînement DÉJÀ effectuées au moment de la sauvegarde
 iter_start = 0
-if args.resume:
-    ckpt_path = os.path.join(out_dir, "checkpoint.pt")
-    if os.path.exists(ckpt_path):
-        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt["model"])
-        if "optimizer" in ckpt:
-            optimizer.load_state_dict(ckpt["optimizer"])
-        iter_start = ckpt.get("iter", 0) + 1
-        print(f"✅ Reprise depuis iter {iter_start}")
+resume_ckpt_loaded = resume_ckpt is not None
+if resume_ckpt is not None:
+    if resume_ckpt["config"].vocab_size != vocab_size:
+        print(f"❌ Vocabulaire du checkpoint ({resume_ckpt['config'].vocab_size}) ≠ données "
+              f"({vocab_size}) — reprise impossible sur un autre tokenizer/dataset")
+        sys.exit(1)
+    model.load_state_dict(resume_ckpt["model"])
+    if "optimizer" in resume_ckpt:
+        optimizer.load_state_dict(resume_ckpt["optimizer"])
+    iter_start = resume_ckpt.get("iter", 0)
+    if iter_start >= max_iters:
+        print(f"✅ Entraînement déjà terminé ({iter_start}/{max_iters} itérations) — rien à faire")
     else:
-        print("⚠️  Aucun checkpoint trouvé — démarrage depuis 0")
+        print(f"✅ Reprise depuis iter {iter_start}")
+    del resume_ckpt
+elif os.path.exists(ckpt_path):
+    # Nouvel entraînement : on ne détruit jamais silencieusement un modèle existant
+    import shutil
+    backup = os.path.join(out_dir, "checkpoint.prev.pt")
+    shutil.copy2(ckpt_path, backup)
+    print(f"💾 Checkpoint existant sauvegardé → {backup}  (--resume pour reprendre au lieu de repartir de 0)")
+
+
+def save_checkpoint(it: int) -> None:
+    """Sauvegarde modèle + optimizer (pour --resume). it = itérations effectuées."""
+    checkpoint = {
+        "model":     model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "config":    config,
+        "iter":      it,
+        "tokenizer": meta.get("tokenizer", "char"),
+        "data_dir":  args.data_dir,
+    }
+    if meta.get("tokenizer") != "tiktoken_gpt2":
+        checkpoint["vocab"] = {"stoi": stoi, "itos": itos}
+    # Écriture atomique : un Ctrl+C pendant la sauvegarde ne corrompt pas le checkpoint
+    tmp_path = ckpt_path + ".tmp"
+    torch.save(checkpoint, tmp_path)
+    os.replace(tmp_path, ckpt_path)
 
 
 # ─────────────────────────────────────────
@@ -228,11 +318,11 @@ print(f"\n🚀 Démarrage entraînement nanoPOPIXA [{args.size}]...\n")
 t0     = time.time()
 t_last = t0
 
-# Log propre à chaque run (sauf reprise)
-if not args.resume:
-    with open("train.log", "w", encoding="utf-8") as f:
-        f.write(f"# max_iters={max_iters} eval_interval={eval_interval}"
-                f" batch_size={batch_size} block_size={block_size}\n")
+# Log propre à chaque run ; en reprise on AJOUTE un en-tête (le monitor garde le dernier :
+# max_iters / batch peuvent avoir changé)
+with open("train.log", "a" if resume_ckpt_loaded else "w", encoding="utf-8") as f:
+    f.write(f"# max_iters={max_iters} eval_interval={eval_interval}"
+            f" batch_size={batch_size} block_size={block_size}\n")
 
 for iter in range(iter_start, max_iters):
 
@@ -260,17 +350,9 @@ for iter in range(iter_start, max_iters):
         with open("train.log", "a", encoding="utf-8") as f:
             f.write(log_line + "\n")
         
-        # Sauvegarde checkpoint (+ optimizer pour --resume)
-        checkpoint = {
-            "model":     model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "config":    config,
-            "iter":      iter,
-            "tokenizer": meta.get("tokenizer", "char"),
-        }
-        if meta.get("tokenizer") != "tiktoken_gpt2":
-            checkpoint["vocab"] = {"stoi": stoi, "itos": itos}
-        torch.save(checkpoint, os.path.join(out_dir, "checkpoint.pt"))
+        # Sauvegarde checkpoint (+ optimizer pour --resume) — inutile avant le 1er pas
+        if iter > iter_start:
+            save_checkpoint(iter)
 
     # ── Forward + backward avec gradient accumulation ─────────────────────────
     optimizer.zero_grad(set_to_none=True)
@@ -284,7 +366,18 @@ for iter in range(iter_start, max_iters):
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     optimizer.step()
 
-print(f"\n✅ Entraînement terminé en {time.time() - t0:.1f}s")
+# Évaluation + sauvegarde finales — sinon les itérations après la dernière évaluation
+# seraient perdues (rien à faire si aucune itération n'a tourné : le checkpoint, et donc
+# les sessions de chat, restent valides)
+if iter_start < max_iters:
+    losses   = estimate_loss(model)
+    log_line = (f"iter {max_iters:5d} | train {losses['train']:.4f} | val {losses['val']:.4f} | "
+                f"lr {get_lr(max_iters):.2e} | {time.time() - t_last:.1f}s")
+    print(f"[{'█' * 30}] 100.0%  {log_line}")
+    with open("train.log", "a", encoding="utf-8") as f:
+        f.write(log_line + "\n")
+    save_checkpoint(max_iters)
+print(f"\n✅ Entraînement terminé en {time.time() - t0:.1f}s — checkpoint : {ckpt_path}")
 
 
 # ─────────────────────────────────────────

@@ -30,7 +30,9 @@ def get_links(soup, current_url, base_domain):
 def scrape_recursive(start_url, max_pages=10, output_file="web_fr.txt"):
     visited = set()
     to_visit = [start_url]
-    pages_scraped = 0
+    queued = {start_url}       # déduplication de la file
+    pages_scraped = 0          # pages avec du texte
+    attempts = 0               # requêtes effectuées — c'est elles que max_pages limite
     base_domain = urlparse(start_url).netloc
 
     print(f"🕵️  Début de l'exploration sur : {base_domain} (Limite : {max_pages} pages)")
@@ -39,12 +41,13 @@ def scrape_recursive(start_url, max_pages=10, output_file="web_fr.txt"):
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
     }
 
-    while to_visit and pages_scraped < max_pages:
+    while to_visit and attempts < max_pages:
         url = to_visit.pop(0)
         if url in visited:
             continue
-            
-        print(f"[{pages_scraped+1}/{max_pages}] 🌐 Exploration de : {url}...")
+        attempts += 1
+
+        print(f"[{attempts}/{max_pages}] 🌐 Exploration de : {url}...")
         
         try:
             response = requests.get(url, headers=headers, timeout=10)
@@ -56,7 +59,8 @@ def scrape_recursive(start_url, max_pages=10, output_file="web_fr.txt"):
             # 1. Extraction des liens pour la suite
             new_links = get_links(soup, url, base_domain)
             for link in new_links:
-                if link not in visited:
+                if link not in visited and link not in queued:
+                    queued.add(link)
                     to_visit.append(link)
 
             # 2. Nettoyage et extraction du texte et du CODE
@@ -97,7 +101,8 @@ def scrape_recursive(start_url, max_pages=10, output_file="web_fr.txt"):
             print(f"   ❌ Erreur sur {url} : {e}")
             visited.add(url) # On ne réessaie pas les erreurs
 
-    print(f"\n🏁 Exploration terminée. {pages_scraped} pages traitées dans {output_file}")
+    print(f"\n🏁 Exploration terminée. {attempts} pages explorées, {pages_scraped} avec du texte"
+          f" dans {output_file}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -13,10 +13,16 @@ import os
 import hashlib
 import torch
 
+# Version du format sur disque :
+#   2 — token_ids approximatifs (ré-encodés depuis le texte)
+#   3 — token_ids exacts couverts par le KV-cache + historique texte (sans thinking)
+SESSION_VERSION   = 3
+_READABLE_VERSIONS = (2, 3)
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _checkpoint_fingerprint(checkpoint_path: str) -> str:
+def checkpoint_fingerprint(checkpoint_path: str) -> str:
     """
     Empreinte du checkpoint pour invalider le cache si le modèle change.
     Utilise taille + mtime (rapide, pas de lecture du fichier).
@@ -30,6 +36,9 @@ def _checkpoint_fingerprint(checkpoint_path: str) -> str:
         return "unknown"
 
 
+_checkpoint_fingerprint = checkpoint_fingerprint   # alias historique
+
+
 # ── Save ─────────────────────────────────────────────────────────────────────
 
 def save_session(
@@ -37,23 +46,37 @@ def save_session(
     past_kvs: list,
     token_ids: list,
     checkpoint_path: str,
+    history: str = None,
+    fingerprint: str = None,
 ) -> None:
     """
     Sérialise le KV-cache et les token IDs sur disque.
 
     past_kvs   : liste de (K, V) tenseurs — un par couche Transformer
-    token_ids  : liste d'entiers — tous les tokens traités depuis le début
+    token_ids  : liste d'entiers — les tokens couverts par le cache, dans l'ordre
     checkpoint_path : chemin du checkpoint pour fingerprinting
+    history    : historique texte de la conversation (sans thinking) — optionnel
+    fingerprint : empreinte du checkpoint calculée AU CHARGEMENT du modèle (recommandé) —
+                  sinon le fichier est re-stat-é maintenant : si un entraînement l'a
+                  réécrit entre-temps, un cache calculé avec les anciens poids serait
+                  estampillé avec la nouvelle empreinte.
+
+    Écriture atomique (fichier temporaire + os.replace) : un crash pendant la
+    sauvegarde ne laisse jamais un cache corrompu.
     """
     os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
     payload = {
-        "version":    2,
-        "ckpt_fp":    _checkpoint_fingerprint(checkpoint_path),
-        "token_ids":  token_ids,
-        # Déplacer sur CPU avant de sauvegarder (portable MPS → CPU → CUDA)
-        "past_kvs":   [(k.cpu(), v.cpu()) for k, v in past_kvs],
+        "version":    SESSION_VERSION,
+        "ckpt_fp":    fingerprint or checkpoint_fingerprint(checkpoint_path),
+        "token_ids":  list(token_ids),
+        # Déplacer sur CPU avant de sauvegarder (portable MPS → CPU → CUDA) ;
+        # clone() compacte les vues tronquées (sinon tout le stockage serait écrit)
+        "past_kvs":   [(k.detach().cpu().clone(), v.detach().cpu().clone()) for k, v in past_kvs],
+        "history":    history,
     }
-    torch.save(payload, cache_path)
+    tmp_path = cache_path + ".tmp"
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, cache_path)
 
 
 # ── Load ─────────────────────────────────────────────────────────────────────
@@ -62,57 +85,79 @@ def load_session(
     cache_path: str,
     checkpoint_path: str,
     device: str,
+    with_history: bool = False,
+    fingerprint: str = None,
 ) -> tuple:
     """
     Restaure le KV-cache depuis le disque.
 
     Retourne (past_kvs, token_ids) si valide,
     sinon     (None, [])           si cache absent ou invalide.
+    with_history=True → (past_kvs, token_ids, history) ; history vaut None si absent.
+    fingerprint       : empreinte du checkpoint réellement chargé (sinon celle du fichier).
+
+    past_kvs est un model.KVCache (liste de (K, V)) dont `token_ids` vaut les ids
+    du cache s'ils sont cohérents avec sa longueur (format v3), sinon None :
+    l'appelant doit alors reconstruire le contexte plutôt que réutiliser le cache.
 
     Invalidations :
       - Fichier absent
       - Version incompatible
       - Fingerprint du checkpoint différent (modèle changé)
-      - Erreur de lecture
+      - Erreur de lecture ou contenu malformé
     """
+    invalid = (None, [], None) if with_history else (None, [])
+
     if not os.path.exists(cache_path):
-        return None, []
+        return invalid
 
     # Si le checkpoint lui-même n'existe pas, invalider immédiatement
     if not os.path.exists(checkpoint_path):
-        return None, []
+        return invalid
 
     try:
-        payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+        # weights_only=True : le cache ne contient que tenseurs / ints / str → aucun
+        # code arbitraire exécuté si un fichier piégé traîne dans le dossier courant
+        payload = torch.load(cache_path, map_location="cpu", weights_only=True)
+        if not isinstance(payload, dict):
+            return invalid
+
+        # Vérification version
+        if payload.get("version") not in _READABLE_VERSIONS:
+            return invalid
+
+        # Vérification modèle (si le checkpoint a changé, le cache est invalide)
+        if payload.get("ckpt_fp") != (fingerprint or checkpoint_fingerprint(checkpoint_path)):
+            return invalid
+
+        from model import KVCache
+        kvs       = [(k.to(device), v.to(device)) for k, v in payload["past_kvs"]]
+        token_ids = list(payload["token_ids"])
     except Exception:
-        return None, []
+        return invalid
 
-    # Vérification version
-    if payload.get("version") != 2:
-        return None, []
-
-    # Vérification modèle (si le checkpoint a changé, le cache est invalide)
-    if payload.get("ckpt_fp") != _checkpoint_fingerprint(checkpoint_path):
-        return None, []
-
-    past_kvs  = [(k.to(device), v.to(device)) for k, v in payload["past_kvs"]]
-    token_ids = payload["token_ids"]
+    seq_len  = kvs[0][0].size(2) if kvs else 0
+    exact    = payload.get("version") == SESSION_VERSION and seq_len == len(token_ids)
+    past_kvs = KVCache(kvs, list(token_ids) if exact else None)
+    if with_history:
+        return past_kvs, token_ids, payload.get("history")
     return past_kvs, token_ids
 
 
 # ── Clear ─────────────────────────────────────────────────────────────────────
 
 def clear_session(cache_path: str) -> bool:
-    """Supprime le cache de session. Retourne True si supprimé."""
-    if os.path.exists(cache_path):
+    """Supprime le cache de session. Retourne True si supprimé (jamais d'exception)."""
+    try:
         os.remove(cache_path)
         return True
-    return False
+    except OSError:
+        return False
 
 
 # ── Info ──────────────────────────────────────────────────────────────────────
 
-def session_info(cache_path: str, checkpoint_path: str) -> dict:
+def session_info(cache_path: str, checkpoint_path: str, fingerprint: str = None) -> dict:
     """Retourne des métadonnées sur le cache (taille, nb tokens, validité)."""
     if not os.path.exists(cache_path):
         return {"exists": False}
@@ -121,10 +166,10 @@ def session_info(cache_path: str, checkpoint_path: str) -> dict:
     mtime   = os.path.getmtime(cache_path)
 
     try:
-        payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+        payload = torch.load(cache_path, map_location="cpu", weights_only=True)
         valid   = (
-            payload.get("version") == 2
-            and payload.get("ckpt_fp") == _checkpoint_fingerprint(checkpoint_path)
+            payload.get("version") in _READABLE_VERSIONS
+            and payload.get("ckpt_fp") == (fingerprint or checkpoint_fingerprint(checkpoint_path))
         )
         n_tokens = len(payload.get("token_ids", []))
     except Exception:

@@ -3,6 +3,7 @@ nanoPOPIXA — Splash screen
 Globe 3D (Lambert shading + continents rotatifs) + logo pixel art gradient
 """
 
+import os
 import sys
 import time
 import math
@@ -123,7 +124,22 @@ _SP = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 def spin(f): return GRAD[2] + _SP[f % len(_SP)] + R
 
 # ─── Splash principale ────────────────────────────────────────────────────────
+def _can_animate() -> bool:
+    """Animation seulement sur un vrai terminal couleur UTF-8 assez grand."""
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return False
+    if "utf" not in (sys.stdout.encoding or "").lower():
+        return False
+    try:
+        size = os.get_terminal_size()
+    except OSError:
+        return False
+    return size.columns >= 50 and size.lines >= 25
+
+
 def splash(subtitle="Un LLM minimaliste · PyTorch · from scratch"):
+    if not _can_animate():
+        return   # pipe, NO_COLOR, TERM=dumb, terminal trop petit ou non UTF-8
     lo = logo()
     # Centrer le globe (23 chars) au-dessus du logo (1+48=49 chars visibles)
     PAD = (49 - W) // 2   # = 13

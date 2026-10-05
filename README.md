@@ -1,7 +1,7 @@
 # nanoPOPIXA
 
 > Un LLM minimaliste from scratch — inspiré de [nanoGPT](https://github.com/karpathy/nanoGPT), personnalisé et étendu par Dimitri.
-> Architecture v2 : **RMSNorm · SwiGLU · RoPE · KV-Cache · Thinking blocks · Nucleus sampling**
+> Architecture v2 : **RMSNorm · SwiGLU · RoPE · KV-Cache · Thinking blocks · Nucleus sampling · Structured outputs**
 
 ---
 
@@ -55,14 +55,18 @@ Logits → top-k / top-p / temperature → token suivant
 | Inférence | Recalcul complet O(T²) | **KV-Cache** O(1)/token | 2-5× plus rapide |
 | Sampling | top-k uniquement | top-k + **top-p nucleus** | Meilleure qualité |
 | Génération | Simple | **Thinking blocks** | Raisonnement interne |
+| Sorties | Texte libre | **Structured outputs** (JSON Schema) | JSON valide garanti |
 
 ### Presets de taille
 
-| Taille  | Params | Blocs | Têtes | Embd | Block size |
-|---------|--------|-------|-------|------|------------|
-| nano    | ~2M    | 4     | 4     | 128  | 512        |
-| small   | ~10M   | 6     | 6     | 384  | 1024       |
-| medium  | ~85M   | 12    | 12    | 768  | 1024       |
+| Taille  | Params (hors embeddings) | Blocs | Têtes | Embd | Block size |
+|---------|--------------------------|-------|-------|------|------------|
+| nano    | ~0.9M                    | 4     | 4     | 128  | 512        |
+| small   | ~10M                     | 6     | 6     | 384  | 1024       |
+| medium  | ~85M                     | 12    | 12    | 768  | 1024       |
+
+> Les embeddings (partagés avec la tête de sortie) s'ajoutent : `vocab × embd`, soit
+> +6.4M (nano), +19M (small), +39M (medium) avec le tokenizer BPE gpt2 (50 257 tokens).
 
 ---
 
@@ -75,6 +79,7 @@ pip install -e .
 ```
 
 Dépendances : `torch >= 2.0`, `numpy`, `tiktoken`
+— optionnelles : `pip install -e ".[scrape]"` (crawler `popixa scrape`), `pip install -e ".[dev]"` (tests)
 
 ---
 
@@ -87,7 +92,7 @@ Dépendances : `torch >= 2.0`, `numpy`, `tiktoken`
 # 1. Télécharger et préparer un dataset (~1 MB)
 popixa prep --dataset shakespeare
 
-# 2. Entraîner un modèle nano (~2M params)
+# 2. Entraîner un modèle nano (~0.9M params hors embeddings)
 #    CPU : ~10-15 min  |  Apple Silicon MPS : ~3-5 min  |  GPU CUDA : ~1-2 min
 popixa train --size nano --data_dir data/
 
@@ -118,8 +123,12 @@ popixa collect SOURCE_DIR  → assembler du code source en corpus
 
 ```bash
 popixa train --size nano --data_dir data/       # modèle léger, rapide
-popixa train --size medium --resume             # reprendre depuis checkpoint
+popixa train --data_dir data/ --resume          # reprendre depuis checkpoint
+popixa train --size nano --data_dir data/ --longrope   # rope_base=500k (la fenêtre reste block_size)
 ```
+
+> `--resume` reprend l'architecture du checkpoint (un `--size`/`--longrope` différent est
+> signalé puis ignoré) et le modèle final est toujours sauvegardé en fin d'entraînement.
 
 ### Options chat
 
@@ -129,15 +138,27 @@ popixa chat --temp 0.7 --tokens 300 --top_p 0.9
 popixa chat --top_p 0.95 --penalty 1.3
 ```
 
+### Génération non-interactive & structured outputs
+
+```bash
+popixa gen --prompt "Il était une fois" --tokens 200 --top_p 0.9
+popixa gen --json --tokens 120                          # n'importe quel JSON valide
+popixa gen --prompt "Fiche : " --schema fiche.json      # JSON conforme au schéma
+popixa gen --schema '{"type":"object","properties":{"nom":{"type":"string"}},"required":["nom"]}'
+```
+
+`stdout` ne contient que le texte généré (`popixa gen --json > sortie.json`).
+
 ### Commandes in-chat
 
 #### Paramètres de génération
 
 ```
-/temp 0.7          → changer la température
+/temp 0.7          → changer la température (0 = greedy)
 /tokens 400        → nb de tokens à générer
 /topp 0.9          → nucleus sampling (top-p)
-/penalty 1.3       → repetition penalty (1.0 = désactivé)
+/penalty 1.3       → repetition penalty (1.0 = désactivé, doit être > 0)
+/stop diminishing  → arrêt anticipé : repetitive (défaut) | diminishing | off
 ```
 
 #### Modes (nouveauté v2)
@@ -148,6 +169,13 @@ popixa chat --top_p 0.95 --penalty 1.3
                      Phase 2 : réponse finale        (temperature normale, en violet)
 
 /thinkbudget 200   → tokens alloués à la phase de réflexion (défaut : 150)
+/adaptive          → budget de thinking adaptatif selon la longueur du prompt
+/interleaved       → thinking intercalé : mini-pauses de réflexion pendant la réponse
+/redactthink       → les tokens de réflexion ne restent pas dans le contexte
+/fast              → speculative decoding ⚡ (même distribution, plusieurs tokens par passe)
+/draft ngram|self  → source des drafts du fast mode (ngram = prompt lookup, défaut)
+/json [schéma]     → structured outputs : JSON valide, conforme au schéma s'il est fourni
+                     (fichier .json ou JSON inline — /json off pour désactiver)
 
 /effort low        → preset : temp=1.0  top_k=20  top_p=0.85  tokens=100
 /effort medium     → preset : temp=0.8  top_k=40  top_p=0.90  tokens=200
@@ -160,8 +188,12 @@ popixa chat --top_p 0.95 --penalty 1.3
 ```
 /ctx               → afficher l'état du contexte (barre de progression)
 /reset             → remettre le contexte à zéro
+/cache             → infos sur la session persistante (KV-cache sur disque)
+/clearcache        → effacer la session persistante
+/taskbudget 2000   → budget de tokens sur une tâche multi-tours (/taskbudget off)
 /libre             → génération libre sans prompt
 /save conv.txt     → sauvegarder la conversation
+/help              → liste des commandes
 ```
 
 ---
@@ -182,6 +214,13 @@ popixa chat --top_p 0.95 --penalty 1.3
 - **Thinking blocks** — raisonnement interne deux phases (temperature=1 puis normale)
 - **Diminishing returns** — arrêt automatique si la génération tourne en rond
 - **Effort levels** — presets low/medium/high/max ajustant tous les paramètres
+- **Structured outputs** — décodage contraint par une grammaire JSON / JSON Schema
+  (types, `properties`/`required`, `enum`/`const`, `items`/`minItems`/`maxItems`,
+  `minLength`/`maxLength`, `anyOf`/`oneOf`, `$ref` récursifs) : chaque token est
+  vérifié, le JSON est fermé automatiquement si le budget s'épuise
+- **Speculative decoding** — drafts n-grammes (prompt lookup) vérifiés en une passe,
+  distribution de sortie identique à l'échantillonnage normal
+- **Fenêtre glissante** — au-delà de `block_size`, le contexte glisse au lieu de planter
 
 ### Entraînement
 - **Cosine LR scheduling** avec warmup linéaire
@@ -191,7 +230,9 @@ popixa chat --top_p 0.95 --penalty 1.3
 - **Streaming token par token** en chat
 
 ### Gestion du contexte
-- **Auto-compact** — compaction automatique à 90% de la fenêtre (garde 50% récent)
+- **Auto-compact** — compaction automatique à 90% de la fenêtre (garde 50% récent, en vrais tokens)
+- **Session persistante** — KV-cache sauvegardé sur disque avec les ids exacts des tokens,
+  restauré au démarrage (invalidé si le checkpoint change)
 - **Warning visuel** à 80% avec barre de progression colorée
 - **Indicateur contexte** dans le prompt `[ctx 83%]`
 - **Tokenisation BPE** (tiktoken gpt2, 50 257 tokens) ou caractère
@@ -203,10 +244,10 @@ popixa chat --top_p 0.95 --penalty 1.3
 | Nom           | Description                          |
 |---------------|--------------------------------------|
 | `shakespeare` | Œuvres complètes (défaut)            |
-| `hugo`        | Victor Hugo — Les Misérables         |
-| `moliere`     | Molière — pièces complètes           |
+| `hugo`        | Victor Hugo — Les Misérables, tome I (français) |
+| `moliere`     | Molière — Œuvres complètes, tome 1 (français)   |
 | `bible`       | Bible (King James Version)           |
-| `linux`       | Code source noyau Linux              |
+| `linux`       | Code source noyau Linux (extraits v6.6) |
 | `javascript`  | lodash + jquery + vue + react        |
 
 ---
@@ -218,12 +259,22 @@ nanopopixa/
 ├── model.py       # Transformer v2 : RMSNorm · SwiGLU · RoPE · KV-Cache · Thinking
 ├── train.py       # Boucle d'entraînement + LR scheduling
 ├── chat.py        # REPL interactif : thinking blocks · effort levels · auto-compact
+├── structured.py  # Structured outputs : matcher JSON Schema octet par octet + masques de tokens
+├── session_cache.py # KV-cache persistant entre sessions
 ├── data_prep.py   # Téléchargement et tokenisation des datasets
 ├── monitor.py     # Dashboard terminal (courbe loss en braille)
 ├── scrape.py      # Crawler web → corpus texte
 ├── splash.py      # Globe 3D + logo animé
 ├── popixa_cli.py  # Point d'entrée CLI unifié
-└── setup.py       # Package installable
+├── tests/         # Tests pytest (modèle, session, chat, structured outputs)
+└── pyproject.toml # Package installable
+```
+
+### Tests
+
+```bash
+pip install -e ".[dev]"
+python -m pytest -q tests
 ```
 
 ---

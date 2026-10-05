@@ -7,8 +7,11 @@ Usage : python monitor.py   ou   popixa monitor
 import re
 import os
 import sys
+import math
 import time
+import shutil
 import argparse
+import subprocess
 from dataclasses import dataclass
 from typing import Optional
 
@@ -62,8 +65,11 @@ def _fmt_time(secs: float) -> str:
 
 
 # ─── Parser ───────────────────────────────────────────────────────────────────
+# Les pertes peuvent valoir nan / inf quand l'entraînement diverge : on les garde
+# (la divergence doit se VOIR dans le dashboard, pas disparaître)
+_LOSS       = r"(-?inf|nan|[\d.]+)"
 _LOG_RE     = re.compile(
-    r"iter\s+(\d+)\s*\|\s*train\s+([\d.]+)\s*\|\s*val\s+([\d.]+)"
+    r"iter\s+(\d+)\s*\|\s*train\s+" + _LOSS + r"\s*\|\s*val\s+" + _LOSS +
     r"\s*\|\s*lr\s+([\d.eE+\-]+)\s*\|\s*([\d.]+)s"
 )
 _HEADER_RE  = re.compile(
@@ -80,7 +86,7 @@ def parse_log(path: str) -> tuple[list[Entry], Optional[int], int, int, int]:
     batch_size    = 1
     block_size    = 1
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 mh = _HEADER_RE.match(line)
                 if mh:
@@ -102,24 +108,25 @@ def parse_log(path: str) -> tuple[list[Entry], Optional[int], int, int, int]:
                         ))
                     except (ValueError, AttributeError):
                         continue
-    except (FileNotFoundError, PermissionError):
+    except OSError:      # absent, illisible, dossier…
         pass
     return entries, max_iters, eval_interval, batch_size, block_size
 
 
 def _get_memory_str() -> str:
     """Retourne une string courte sur la mémoire GPU/MPS ou RAM."""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            used = torch.cuda.memory_allocated() / 1024**3
-            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    # GPU : nvidia-smi mesure la mémoire du device (process d'entraînement compris) sans
+    # créer de contexte CUDA dans le monitor (torch.cuda ne verrait que ce process-ci)
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2,
+            ).stdout.splitlines()[0]
+            used, total = (float(x) / 1024 for x in out.split(","))
             return f"GPU {used:.1f}/{total:.1f} GB"
-        if torch.backends.mps.is_available():
-            # MPS ne expose pas la mémoire allouée facilement — utiliser psutil RAM
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
             pass
-    except ImportError:
-        pass
     try:
         import psutil
         vm = psutil.virtual_memory()
@@ -176,6 +183,8 @@ class BrailleCanvas:
         prev_py: Optional[int] = None
 
         for i, v in enumerate(values):
+            if not math.isfinite(v):
+                continue   # nan / inf : pas de point (signalé en rouge dans l'en-tête)
             px    = int(i / max(n - 1, 1) * (pw - 1))
             norm  = (v - y_min) / (y_max - y_min)
             py    = int((1.0 - norm) * (ph - 1))
@@ -216,7 +225,7 @@ class BrailleCanvas:
 def _box_top(w: int, title: str = "") -> str:
     inner = w - 2
     if title:
-        t   = f" {title} "
+        t   = f" {title} "[:max(0, inner - 1)]
         pad = inner - 1 - len(t)   # -1 pour le ═ du préfixe ╔═
         pad = max(0, pad)
         return BOX_C + "╔═" + t + "═" * pad + "╗" + R
@@ -225,7 +234,7 @@ def _box_top(w: int, title: str = "") -> str:
 def _box_mid(w: int, title: str = "") -> str:
     inner = w - 2
     if title:
-        t   = f" {title} "
+        t   = f" {title} "[:max(0, inner - 1)]
         pad = inner - 1 - len(t)   # -1 pour le ═ du préfixe ╠═
         pad = max(0, pad)
         return BOX_C + "╠═" + t + "═" * pad + "╣" + R
@@ -236,6 +245,9 @@ def _box_bot(w: int) -> str:
 
 def _box_row(content: str, w: int) -> str:
     visible = re.sub(r"\033\[[^m]*m", "", content)
+    if len(visible) > w - 2:
+        # Terminal étroit : on tronque (texte brut) plutôt que de casser le cadre
+        content = visible = visible[:max(0, w - 3)] + "…"
     pad     = max(0, w - 2 - len(visible))
     return BOX_C + "║" + R + content + " " * pad + BOX_C + "║" + R
 
@@ -258,9 +270,16 @@ def _chart_section(canvas: BrailleCanvas,
         elif i == h - 1:
             ytag = _fmt_y(y_min) + " " + BOX_C + "┤" + R
         else:
-            ytag = "       " + BOX_C + "┤" + R
+            ytag = "      " + BOX_C + "┤" + R
         rows.append(_box_row(ytag + line, w))
     return rows
+
+
+def _finite_range(values: list, eps: float) -> tuple:
+    """(min, max) des valeurs finies — écart minimal eps (courbe plate ou vide)."""
+    finite = [v for v in values if math.isfinite(v)] or [0.0]
+    lo, hi = min(finite), max(finite)
+    return (lo, hi + eps) if hi == lo else (lo, hi)
 
 
 def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.log",
@@ -273,18 +292,23 @@ def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.l
         lines.append(_box_top(w, "nanoPOPIXA Monitor"))
         lines.append(_box_row(INFO_C + f"  En attente de données…" + R, w))
         lines.append(_box_row(INFO_C + f"  Log : {log_path}" + R, w))
-        lines.append(_box_row(INFO_C + f"  Lancez : popixa train --data_dir data/" + R, w))
+        lines.append(_box_row(INFO_C + f"  Lancez : popixa train --size nano --data_dir data/" + R, w))
         lines.append(_box_bot(w))
         return lines
 
     last = entries[-1]
     n    = len(entries)
 
-    # Vitesse — moyenne des 10 dernières durées (delta par éval)
-    recent   = entries[-min(n, 10):]
-    avg_dur  = sum(e.duration for e in recent) / len(recent)
-    if avg_dur > 0:
-        its = eval_interval / avg_dur
+    # Vitesse — Σ Δiter / Σ durée sur les dernières paires d'évaluations consécutives
+    # (l'entrée iter 0, la 1re après --resume et l'entrée finale ne couvrent pas
+    #  eval_interval itérations : on utilise les vrais écarts d'itérations)
+    recent = entries[-11:]
+    pairs  = [(b.iter - a.iter, b.duration) for a, b in zip(recent[:-1], recent[1:])
+              if b.iter > a.iter and b.duration > 0]
+    d_it  = sum(p[0] for p in pairs)
+    d_t   = sum(p[1] for p in pairs)
+    its   = d_it / d_t if d_t > 0 else 0.0
+    if its > 0:
         # tok/s = it/s × batch_size × block_size (total tokens traités par seconde)
         toks_per_sec = its * batch_size * block_size
         if toks_per_sec >= 1_000:
@@ -298,22 +322,28 @@ def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.l
     mem_str = _get_memory_str()
 
     # ETA — si max_iters connu
-    if max_iters and avg_dur > 0:
-        remaining_evals = max(0, (max_iters - last.iter) // eval_interval)
-        eta_secs        = remaining_evals * avg_dur
-        eta_str         = f"  ·  ETA {_fmt_time(eta_secs)}"
+    if max_iters and its > 0:
+        eta_secs = max(0, max_iters - last.iter) / its
+        eta_str  = f"  ·  ETA {_fmt_time(eta_secs)}"
     else:
         eta_str = ""
 
-    # Meilleur val loss
-    best_val     = min(e.val_loss for e in entries)
-    best_val_str = f"  ·  best {best_val:.4f}"
+    # Meilleur val loss (valeurs finies uniquement)
+    finite_val   = [e.val_loss for e in entries if math.isfinite(e.val_loss)]
+    best_val_str = f"  ·  best {min(finite_val):.4f}" if finite_val else ""
 
-    train_arr = "↓" if n > 1 and last.train_loss < entries[-2].train_loss else "→"
-    val_arr   = "↓" if n > 1 and last.val_loss   < entries[-2].val_loss   else "→"
+    def _arrow(cur, prev):
+        if n < 2 or not (math.isfinite(cur) and math.isfinite(prev)) or cur == prev:
+            return "→"
+        return "↓" if cur < prev else "↑"
 
-    tc = fg(*lerp_color(TRAIN_A, TRAIN_B, min(1.0, n / 200)))
-    vc = fg(*lerp_color(VAL_A,   VAL_B,   min(1.0, n / 200)))
+    train_arr = _arrow(last.train_loss, entries[-2].train_loss if n > 1 else last.train_loss)
+    val_arr   = _arrow(last.val_loss,   entries[-2].val_loss   if n > 1 else last.val_loss)
+
+    # Divergence (nan / inf) → rouge
+    diverged = fg(255, 60, 60)
+    tc = diverged if not math.isfinite(last.train_loss) else fg(*lerp_color(TRAIN_A, TRAIN_B, min(1.0, n / 200)))
+    vc = diverged if not math.isfinite(last.val_loss) else fg(*lerp_color(VAL_A, VAL_B, min(1.0, n / 200)))
 
     progress_str = (
         f"  iter {last.iter}"
@@ -321,18 +351,19 @@ def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.l
         + f"  ·  lr {last.lr:.2e}"
         + f"  ·  {speed}"
         + eta_str
-        + (f"  ·  {mem_str}" if mem_str else "")
     )
 
     lines.append(_box_top(w, "nanoPOPIXA Monitor"))
     lines.append(_box_row(INFO_C + progress_str + R, w))
+    if mem_str:
+        lines.append(_box_row(INFO_C + f"  {mem_str}" + R, w))   # ligne dédiée : jamais de débordement
     lines.append(_box_row(
         f"  train " + tc + f"{last.train_loss:.4f} {train_arr}" + R
         + f"   val " + vc + f"{last.val_loss:.4f} {val_arr}" + R
         + INFO_C + best_val_str + R, w
     ))
 
-    chart_w = w - 10
+    chart_w = max(1, w - 10)
     chart_h = 4
     max_pts = chart_w * 2
     pts     = entries[-max_pts:] if n > max_pts else entries
@@ -344,24 +375,21 @@ def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.l
     # ── Train loss ────────────────────────────────────────────────────────────
     lines.append(_box_mid(w, "train loss"))
     c1   = BrailleCanvas(chart_w, chart_h)
-    tmin = min(train_vals); tmax = max(train_vals)
-    if tmax == tmin: tmax += 0.01
+    tmin, tmax = _finite_range(train_vals, 0.01)
     c1.draw_curve(train_vals, tmin, tmax, TRAIN_A, TRAIN_B)
     lines.extend(_chart_section(c1, tmin, tmax, w))
 
     # ── Val loss ──────────────────────────────────────────────────────────────
     lines.append(_box_mid(w, "val loss"))
     c2   = BrailleCanvas(chart_w, chart_h)
-    vmin = min(val_vals); vmax = max(val_vals)
-    if vmax == vmin: vmax += 0.01
+    vmin, vmax = _finite_range(val_vals, 0.01)
     c2.draw_curve(val_vals, vmin, vmax, VAL_A, VAL_B)
     lines.extend(_chart_section(c2, vmin, vmax, w))
 
     # ── Learning rate ─────────────────────────────────────────────────────────
     lines.append(_box_mid(w, "learning rate"))
     c3     = BrailleCanvas(chart_w, chart_h)
-    lr_min = min(lr_vals); lr_max = max(lr_vals)
-    if lr_max == lr_min: lr_max += 1e-7
+    lr_min, lr_max = _finite_range(lr_vals, 1e-7)
     c3.draw_curve(lr_vals, lr_min, lr_max, LR_C, LR_C)
     lines.extend(_chart_section(c3, lr_min, lr_max, w))
 
@@ -403,10 +431,18 @@ def run_monitor(log_path: str, refresh: float):
 
 
 # ─── Point d'entrée ───────────────────────────────────────────────────────────
+def positive_float(value: str) -> float:
+    """Type argparse : intervalle de rafraîchissement strictement positif."""
+    f = float(value)
+    if not f > 0:
+        raise argparse.ArgumentTypeError(f"doit être > 0 (reçu {value})")
+    return f
+
+
 def main():
     parser = argparse.ArgumentParser(description="Monitor d'entraînement nanoPOPIXA")
     parser.add_argument("--log",     default="train.log")
-    parser.add_argument("--refresh", type=float, default=1.0)
+    parser.add_argument("--refresh", type=positive_float, default=1.0)
     args = parser.parse_args()
     run_monitor(args.log, args.refresh)
 
