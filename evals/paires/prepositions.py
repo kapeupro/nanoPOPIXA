@@ -43,16 +43,16 @@ Gabarits (identifiant court dans le champ « gabarit ») :
     un pays masculin ou pluriel
         « Mon père revient du Japon demain. » / « *... de Japon demain. »
 
-Indices de surface neutralisés :
+Indices de surface :
   - les suites « à le », « à les », « de le », « de les » figurent dans
-    15 mauvaises phrases (article non contracté devant un nom) mais aussi
-    dans 12 bonnes phrases (gabarit pronom_infinitif) ; symétriquement,
-    « au », « aux », « du », « des » devant un infinitif rendent fautives ces
-    12 mauvaises phrases. Un modèle qui pénalise simplement le bigramme
-    « à le » ou « de les » ne gagne donc pas ces paires sans connaître la
-    règle (contraction de l'article, jamais du pronom) ;
+    18 mauvaises phrases (article non contracté devant un nom de chose ou
+    de pays) mais aussi dans 12 bonnes phrases (gabarit pronom_infinitif),
+    dont les mauvaises phrases portent au contraire « au », « aux », « du »
+    ou « des » devant un infinitif. Un modèle qui pénalise simplement le
+    bigramme « à le » ou « de les » perd ces 12 paires : il faut connaître
+    la règle (contraction de l'article, jamais du pronom) ;
   - « au » ou « du » suivi d'une voyelle n'apparaît que dans des mauvaises
-    phrases (9 paires) : ce n'est pas un indice parasite mais la règle
+    phrases (12 paires) : ce n'est pas un indice parasite mais la règle
     elle-même (devant voyelle, l'article s'élide au lieu de se contracter ;
     les seules exceptions, h aspiré et « onze », relèvent du module elision
     et sont exclues ici).
@@ -100,29 +100,34 @@ défendable) :
 Doubles fautes assumées : « *au Italie », « *du Espagne », « *du Italie »
 (dans la lignée de « *au Italie » donné dans la consigne) cumulent genre et
 absence d'élision, mais la règle « en / de devant un nom de pays féminin ou à
-initiale vocalique » est une seule et même règle. Les autres paires de pays
-féminins emploient des noms à initiale consonantique.
+initiale vocalique » est une seule et même règle. Les autres pays féminins
+ont une initiale consonantique ; « d'Iran » / « *du Iran » et « d'Équateur » /
+« *du Équateur » (pays masculins) ne comportent qu'une faute, la
+contraction devant une voyelle.
 
-Équilibre des longueurs (statistiques sur les 65 paires) :
-  - en caractères : bonne phrase strictement plus courte dans 27 paires
-    (41,5 %), plus longue dans 27, de même longueur dans 11 ;
+Équilibre des longueurs (69 paires) :
+  - en caractères : bonne phrase strictement plus courte dans 31 paires
+    (44,9 %), plus longue dans 30, de même longueur dans 8 ;
   - en tokens gpt2 (le tokenizer du projet ; le score est une somme de
-    log-probabilités par token) : bonne phrase plus courte dans 17 paires,
-    plus longue dans 22, de même longueur dans 26.
-La contraction raccourcit la forme (« au » / « à le ») : les gabarits
-contraction_a, contraction_de et partitif mêlent donc des paires où la
-contraction est la bonne forme (bonne phrase plus courte) et des paires
-d'élision (« de l'ail » / « *du ail »), où la bonne phrase est plus longue en
-tokens (et en caractères sauf pour « à l' » / « au ») ; pronom_infinitif
-(bonne phrase toujours plus longue) compense les contractions devant un nom.
-Orientations imposées par le phénomène :
-  - « ville » : bonne phrase toujours plus courte d'un caractère (« à »
-    contre « en ») mais de même longueur en tokens ;
-  - « pays_feminin » : bonne phrase jamais plus courte en caractères
-    (« en » contre « à » ou « au ») et de même longueur en tokens ;
-ces deux gabarits se compensent en caractères (8 paires chacun).
-« pays_masculin », « pays_pluriel » et « provenance » mêlent les cas en
-variant la forme fautive (« en », « à », « à le », « de »...).
+    log-probabilités par token) : bonne phrase plus courte dans 18 paires,
+    plus longue dans 23, de même longueur dans 28. « à », « en », « au »,
+    « aux », « du », « de », « des » font chacun un token, « à le » ou
+    « de les » deux, et une forme élidée (« à l'arbre », « d'Iran ») coûte
+    plus de tokens que « au arbre » ou « du Iran ».
+Répartition par gabarit (caractères, puis tokens ; courte/longue/égale) :
+  - contraction_a 4/2/0 puis 4/2/0, contraction_de et partitif 4/2/0 et
+    3/3/0 (identiques en tokens) : la contraction est la bonne forme
+    devant un nom (bonne phrase plus courte), l'élision devant un masculin
+    vocalique (bonne phrase plus longue, ou égale pour « à l' » / « au ») ;
+  - pronom_infinitif 0/12/0 : la bonne forme non contractée est toujours
+    la plus longue, c'est imposé par le phénomène ; ces paires compensent
+    les contractions devant un nom ;
+  - ville 9/0/0 puis 0/0/9 : « à » contre « en », imposé par le phénomène
+    (un caractère d'écart, même nombre de tokens) ;
+  - pays_feminin 0/3/5 puis 0/0/8 : « en » contre « à » ou « au » ;
+  - pays_masculin 3/3/1 puis 3/0/4, pays_pluriel 2/4/0 puis 2/0/4,
+    provenance 6/1/2 puis 2/4/3 : la forme fautive varie (« en », « à »,
+    « à le », « de », « du ») pour mêler les cas.
 
 Module autonome, bibliothèque standard uniquement, sortie déterministe.
 """
