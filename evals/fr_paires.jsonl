@@ -1,0 +1,344 @@
+{"bad": "Le boulanger préparent le pain avant l'aube.", "gabarit": "sujet_nominal", "good": "Le boulanger prépare le pain avant l'aube.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les oiseaux chante dans les arbres du parc.", "gabarit": "sujet_nominal", "good": "Les oiseaux chantent dans les arbres du parc.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Ma sœur lisent un roman près de la fenêtre.", "gabarit": "sujet_nominal", "good": "Ma sœur lit un roman près de la fenêtre.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les marins répare leurs filets sur le quai.", "gabarit": "sujet_nominal", "good": "Les marins réparent leurs filets sur le quai.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le vent soufflent fort sur la lande.", "gabarit": "sujet_nominal", "good": "Le vent souffle fort sur la lande.", "phenomene": "accord_sujet_verbe"}
+{"bad": "La vieille femme racontaient des histoires au coin du feu.", "gabarit": "sujet_nominal", "good": "La vieille femme racontait des histoires au coin du feu.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les paysans travaillait aux champs du matin au soir.", "gabarit": "sujet_nominal", "good": "Les paysans travaillaient aux champs du matin au soir.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le roi donnaient de grandes fêtes au château.", "gabarit": "sujet_nominal", "good": "Le roi donnait de grandes fêtes au château.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les chevaux attendait devant l'auberge depuis une heure.", "gabarit": "sujet_nominal", "good": "Les chevaux attendaient devant l'auberge depuis une heure.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les cloches sonnait pour la messe du dimanche.", "gabarit": "sujet_nominal", "good": "Les cloches sonnaient pour la messe du dimanche.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le train partiront à huit heures précises.", "gabarit": "sujet_nominal", "good": "Le train partira à huit heures précises.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les invités arrivera après le coucher du soleil.", "gabarit": "sujet_nominal", "good": "Les invités arriveront après le coucher du soleil.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le maire ouvriront la fête demain matin.", "gabarit": "sujet_nominal", "good": "Le maire ouvrira la fête demain matin.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les élèves passera leur examen la semaine prochaine.", "gabarit": "sujet_nominal", "good": "Les élèves passeront leur examen la semaine prochaine.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les pêcheurs rentrera au port avec la marée.", "gabarit": "sujet_nominal", "good": "Les pêcheurs rentreront au port avec la marée.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le chat des voisins dorment sur le toit.", "gabarit": "attracteur_complement", "good": "Le chat des voisins dort sur le toit.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le bruit des voitures empêchent le bébé de dormir.", "gabarit": "attracteur_complement", "good": "Le bruit des voitures empêche le bébé de dormir.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les fenêtres de la chambre donne sur le jardin.", "gabarit": "attracteur_complement", "good": "Les fenêtres de la chambre donnent sur le jardin.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les tours du château domine la vallée.", "gabarit": "attracteur_complement", "good": "Les tours du château dominent la vallée.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le jardin des voisins sont à vendre.", "gabarit": "attracteur_complement", "good": "Le jardin des voisins est à vendre.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les clés de la porte était sous le paillasson.", "gabarit": "attracteur_complement", "good": "Les clés de la porte étaient sous le paillasson.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les amis de mon frère venait souvent à la maison.", "gabarit": "attracteur_complement", "good": "Les amis de mon frère venaient souvent à la maison.", "phenomene": "accord_sujet_verbe"}
+{"bad": "La voix des enfants résonnaient dans l'église.", "gabarit": "attracteur_complement", "good": "La voix des enfants résonnait dans l'église.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le capitaine des soldats choisiront la route.", "gabarit": "attracteur_complement", "good": "Le capitaine des soldats choisira la route.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les feuilles de l'arbre jaunira en automne.", "gabarit": "attracteur_complement", "good": "Les feuilles de l'arbre jauniront en automne.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le prix des légumes augmenteront bientôt.", "gabarit": "attracteur_complement", "good": "Le prix des légumes augmentera bientôt.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les enfants de la voisine ira à la plage.", "gabarit": "attracteur_complement", "good": "Les enfants de la voisine iront à la plage.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le chien que mes filles promènent aboient très fort.", "gabarit": "attracteur_relative", "good": "Le chien que mes filles promènent aboie très fort.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les fleurs que ma mère arrose pousse très vite.", "gabarit": "attracteur_relative", "good": "Les fleurs que ma mère arrose poussent très vite.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le gâteau que mes cousins préfèrent coûtent cher.", "gabarit": "attracteur_relative", "good": "Le gâteau que mes cousins préfèrent coûte cher.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les chemins que le chasseur connaît mène à la source.", "gabarit": "attracteur_relative", "good": "Les chemins que le chasseur connaît mènent à la source.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le vieil homme que les villageois saluaient vivaient près du lac.", "gabarit": "attracteur_relative", "good": "Le vieil homme que les villageois saluaient vivait près du lac.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les tableaux que le peintre vendait valait une fortune.", "gabarit": "attracteur_relative", "good": "Les tableaux que le peintre vendait valaient une fortune.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les chansons que ma grand-mère chantait parlait d'amour.", "gabarit": "attracteur_relative", "good": "Les chansons que ma grand-mère chantait parlaient d'amour.", "phenomene": "accord_sujet_verbe"}
+{"bad": "La maison que mes parents achèteront auront un grand jardin.", "gabarit": "attracteur_relative", "good": "La maison que mes parents achèteront aura un grand jardin.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les pommiers que le jardinier plantera donnera des fruits.", "gabarit": "attracteur_relative", "good": "Les pommiers que le jardinier plantera donneront des fruits.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le bal que mes amies organiseront dureront toute la nuit.", "gabarit": "attracteur_relative", "good": "Le bal que mes amies organiseront durera toute la nuit.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les touristes admirent le pont qui enjambent le fleuve.", "gabarit": "relative_qui", "good": "Les touristes admirent le pont qui enjambe le fleuve.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le guide prendra les sentiers qui monte vers le col.", "gabarit": "relative_qui", "good": "Le guide prendra les sentiers qui montent vers le col.", "phenomene": "accord_sujet_verbe"}
+{"bad": "La jeune fille regardait les vagues qui frappait la falaise.", "gabarit": "relative_qui", "good": "La jeune fille regardait les vagues qui frappaient la falaise.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les femmes écoutaient le vieillard qui parlaient de la guerre.", "gabarit": "relative_qui", "good": "Les femmes écoutaient le vieillard qui parlait de la guerre.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Ma tante plantera des rosiers qui fleurira au printemps.", "gabarit": "relative_qui", "good": "Ma tante plantera des rosiers qui fleuriront au printemps.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Mes oncles achèteront le cheval qui gagneront la course.", "gabarit": "relative_qui", "good": "Mes oncles achèteront le cheval qui gagnera la course.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Il marchaient lentement le long de la rivière.", "gabarit": "pronom_nombre", "good": "Il marchait lentement le long de la rivière.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Ils cherchait leur chemin dans la forêt.", "gabarit": "pronom_nombre", "good": "Ils cherchaient leur chemin dans la forêt.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Je pensent souvent à mon enfance.", "gabarit": "pronom_nombre", "good": "Je pense souvent à mon enfance.", "phenomene": "accord_sujet_verbe"}
+{"bad": "On frappent à la porte.", "gabarit": "pronom_nombre", "good": "On frappe à la porte.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Elles riait de bon cœur.", "gabarit": "pronom_nombre", "good": "Elles riaient de bon cœur.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Elle connaissent le nom de toutes les étoiles.", "gabarit": "pronom_nombre", "good": "Elle connaît le nom de toutes les étoiles.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Ils sait lire et écrire.", "gabarit": "pronom_nombre", "good": "Ils savent lire et écrire.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Nous partiront demain à l'aube.", "gabarit": "pronom_personne", "good": "Nous partirons demain à l'aube.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Tu viendra avec nous au marché.", "gabarit": "pronom_personne", "good": "Tu viendras avec nous au marché.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Vous chantaient mieux que nous.", "gabarit": "pronom_personne", "good": "Vous chantiez mieux que nous.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Je finiras ce travail avant la fin du mois.", "gabarit": "pronom_personne", "good": "Je finirai ce travail avant la fin du mois.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Nous aimez les longues soirées d'hiver.", "gabarit": "pronom_personne", "good": "Nous aimons les longues soirées d'hiver.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Voici la ville où grandit mes cousins.", "gabarit": "sujet_inverse", "good": "Voici la ville où grandissent mes cousins.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Dans le ciel volent un grand oiseau blanc.", "gabarit": "sujet_inverse", "good": "Dans le ciel vole un grand oiseau blanc.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Dans ce manoir habitait trois sœurs.", "gabarit": "sujet_inverse", "good": "Dans ce manoir habitaient trois sœurs.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Au fond des bois coulaient un petit ruisseau.", "gabarit": "sujet_inverse", "good": "Au fond des bois coulait un petit ruisseau.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Sur la place du village dansait les jeunes gens.", "gabarit": "sujet_inverse", "good": "Sur la place du village dansaient les jeunes gens.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Derrière la colline se cachaient un vieux moulin.", "gabarit": "sujet_inverse", "good": "Derrière la colline se cachait un vieux moulin.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Entre les arbres apparaîtront la lune.", "gabarit": "sujet_inverse", "good": "Entre les arbres apparaîtra la lune.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Sur les remparts flotteront le drapeau du roi.", "gabarit": "sujet_inverse", "good": "Sur les remparts flottera le drapeau du roi.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Le berger les conduisent chaque soir à l'étable.", "gabarit": "clitique_objet", "good": "Le berger les conduit chaque soir à l'étable.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Mes amis le respecte depuis longtemps.", "gabarit": "clitique_objet", "good": "Mes amis le respectent depuis longtemps.", "phenomene": "accord_sujet_verbe"}
+{"bad": "L'institutrice les accueillaient devant l'école.", "gabarit": "clitique_objet", "good": "L'institutrice les accueillait devant l'école.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les gardes la surveillait jour et nuit.", "gabarit": "clitique_objet", "good": "Les gardes la surveillaient jour et nuit.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Mon père les appelleront dimanche prochain.", "gabarit": "clitique_objet", "good": "Mon père les appellera dimanche prochain.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Les voisins l'aidera à déménager.", "gabarit": "clitique_objet", "good": "Les voisins l'aideront à déménager.", "phenomene": "accord_sujet_verbe"}
+{"bad": "Mon frère a trouvé une couteau dans l'herbe.", "gabarit": "det_indef", "good": "Mon frère a trouvé un couteau dans l'herbe.", "phenomene": "accord_nominal"}
+{"bad": "Le pêcheur répare une bateau sur la plage.", "gabarit": "det_indef", "good": "Le pêcheur répare un bateau sur la plage.", "phenomene": "accord_nominal"}
+{"bad": "Le meunier habite un maison près du moulin.", "gabarit": "det_indef", "good": "Le meunier habite une maison près du moulin.", "phenomene": "accord_nominal"}
+{"bad": "Un fleur pousse au bord du chemin.", "gabarit": "det_indef", "good": "Une fleur pousse au bord du chemin.", "phenomene": "accord_nominal"}
+{"bad": "Mon cousin n'a jamais vu le mer.", "gabarit": "det_defini", "good": "Mon cousin n'a jamais vu la mer.", "phenomene": "accord_nominal"}
+{"bad": "Le lune éclaire le village endormi.", "gabarit": "det_defini", "good": "La lune éclaire le village endormi.", "phenomene": "accord_nominal"}
+{"bad": "Les soldats marchent vers la château.", "gabarit": "det_defini", "good": "Les soldats marchent vers le château.", "phenomene": "accord_nominal"}
+{"bad": "Regarde cette cygne sur la rivière.", "gabarit": "det_demonstratif", "good": "Regarde ce cygne sur la rivière.", "phenomene": "accord_nominal"}
+{"bad": "J'aime beaucoup ce chanson.", "gabarit": "det_demonstratif", "good": "J'aime beaucoup cette chanson.", "phenomene": "accord_nominal"}
+{"bad": "Cette arbre a plus de cent ans.", "gabarit": "det_demonstratif", "good": "Cet arbre a plus de cent ans.", "phenomene": "accord_nominal"}
+{"bad": "Ce ville possède un grand port.", "gabarit": "det_demonstratif", "good": "Cette ville possède un grand port.", "phenomene": "accord_nominal"}
+{"bad": "Il a perdu son clé dans l'escalier.", "gabarit": "det_possessif", "good": "Il a perdu sa clé dans l'escalier.", "phenomene": "accord_nominal"}
+{"bad": "Elle cherche sa chapeau partout.", "gabarit": "det_possessif", "good": "Elle cherche son chapeau partout.", "phenomene": "accord_nominal"}
+{"bad": "Je range mon chambre le samedi.", "gabarit": "det_possessif", "good": "Je range ma chambre le samedi.", "phenomene": "accord_nominal"}
+{"bad": "Tu as oublié ta parapluie chez nous.", "gabarit": "det_possessif", "good": "Tu as oublié ton parapluie chez nous.", "phenomene": "accord_nominal"}
+{"bad": "Je connais cette légendes depuis l'enfance.", "gabarit": "det_nombre", "good": "Je connais ces légendes depuis l'enfance.", "phenomene": "accord_nominal"}
+{"bad": "Il lave le verres après le repas.", "gabarit": "det_nombre", "good": "Il lave les verres après le repas.", "phenomene": "accord_nominal"}
+{"bad": "Le marchand vend un fruits au marché.", "gabarit": "det_nombre", "good": "Le marchand vend des fruits au marché.", "phenomene": "accord_nominal"}
+{"bad": "Les paysans aiment leurs village.", "gabarit": "det_nombre", "good": "Les paysans aiment leur village.", "phenomene": "accord_nominal"}
+{"bad": "Le cuisinier sort les gâteau du four.", "gabarit": "det_nombre", "good": "Le cuisinier sort le gâteau du four.", "phenomene": "accord_nominal"}
+{"bad": "Nous prendrons nos voiture demain matin.", "gabarit": "det_nombre", "good": "Nous prendrons notre voiture demain matin.", "phenomene": "accord_nominal"}
+{"bad": "Il travaille chaque jours aux champs.", "gabarit": "quantifieur", "good": "Il travaille chaque jour aux champs.", "phenomene": "accord_nominal"}
+{"bad": "J'ai visité plusieurs ville pendant le voyage.", "gabarit": "quantifieur", "good": "J'ai visité plusieurs villes pendant le voyage.", "phenomene": "accord_nominal"}
+{"bad": "Je n'ai reçu aucun réponse.", "gabarit": "quantifieur", "good": "Je n'ai reçu aucune réponse.", "phenomene": "accord_nominal"}
+{"bad": "Il n'a fait aucune bruit.", "gabarit": "quantifieur", "good": "Il n'a fait aucun bruit.", "phenomene": "accord_nominal"}
+{"bad": "Tout la famille dort encore.", "gabarit": "quantifieur", "good": "Toute la famille dort encore.", "phenomene": "accord_nominal"}
+{"bad": "Toute le peuple acclame le roi.", "gabarit": "quantifieur", "good": "Tout le peuple acclame le roi.", "phenomene": "accord_nominal"}
+{"bad": "La mariée porte une robe blanc.", "gabarit": "epithete_genre", "good": "La mariée porte une robe blanche.", "phenomene": "accord_nominal"}
+{"bad": "Le vieillard porte un manteau noire.", "gabarit": "epithete_genre", "good": "Le vieillard porte un manteau noir.", "phenomene": "accord_nominal"}
+{"bad": "Le musicien joue une valse ancien.", "gabarit": "epithete_genre", "good": "Le musicien joue une valse ancienne.", "phenomene": "accord_nominal"}
+{"bad": "Le peintre a un atelier lumineuse.", "gabarit": "epithete_genre", "good": "Le peintre a un atelier lumineux.", "phenomene": "accord_nominal"}
+{"bad": "Cette femme a une voix doux.", "gabarit": "epithete_genre", "good": "Cette femme a une voix douce.", "phenomene": "accord_nominal"}
+{"bad": "Le marin a un regard sérieuse.", "gabarit": "epithete_genre", "good": "Le marin a un regard sérieux.", "phenomene": "accord_nominal"}
+{"bad": "Il vit dans un vieille château.", "gabarit": "epithete_anteposee", "good": "Il vit dans un vieux château.", "phenomene": "accord_nominal"}
+{"bad": "Ils ont acheté une vieux ferme.", "gabarit": "epithete_anteposee", "good": "Ils ont acheté une vieille ferme.", "phenomene": "accord_nominal"}
+{"bad": "Mon oncle possède un belle cheval.", "gabarit": "epithete_anteposee", "good": "Mon oncle possède un beau cheval.", "phenomene": "accord_nominal"}
+{"bad": "La commune a construit un nouvelle pont.", "gabarit": "epithete_anteposee", "good": "La commune a construit un nouveau pont.", "phenomene": "accord_nominal"}
+{"bad": "Elle attend une bon nouvelle.", "gabarit": "epithete_anteposee", "good": "Elle attend une bonne nouvelle.", "phenomene": "accord_nominal"}
+{"bad": "Le fermier élève une gros vache.", "gabarit": "epithete_anteposee", "good": "Le fermier élève une grosse vache.", "phenomene": "accord_nominal"}
+{"bad": "J'ai vu des chats noir dans la cour.", "gabarit": "epithete_nombre", "good": "J'ai vu des chats noirs dans la cour.", "phenomene": "accord_nominal"}
+{"bad": "L'enfant a les yeux bleu.", "gabarit": "epithete_nombre", "good": "L'enfant a les yeux bleus.", "phenomene": "accord_nominal"}
+{"bad": "Avec le mois de mai, les beau jours reviennent enfin.", "gabarit": "epithete_nombre", "good": "Avec le mois de mai, les beaux jours reviennent enfin.", "phenomene": "accord_nominal"}
+{"bad": "Le chasseur a un chien fidèles.", "gabarit": "epithete_nombre", "good": "Le chasseur a un chien fidèle.", "phenomene": "accord_nominal"}
+{"bad": "Chaque matin, le facteur boit un café chauds.", "gabarit": "epithete_nombre", "good": "Chaque matin, le facteur boit un café chaud.", "phenomene": "accord_nominal"}
+{"bad": "Au fond du parc, elle cueille une rose rouges.", "gabarit": "epithete_nombre", "good": "Au fond du parc, elle cueille une rose rouge.", "phenomene": "accord_nominal"}
+{"bad": "La rivière est profond.", "gabarit": "attribut_genre", "good": "La rivière est profonde.", "phenomene": "accord_nominal"}
+{"bad": "Le musée est ouverte le dimanche.", "gabarit": "attribut_genre", "good": "Le musée est ouvert le dimanche.", "phenomene": "accord_nominal"}
+{"bad": "Ma tante semble heureux depuis son mariage.", "gabarit": "attribut_genre", "good": "Ma tante semble heureuse depuis son mariage.", "phenomene": "accord_nominal"}
+{"bad": "À midi, le pain est encore fraîche.", "gabarit": "attribut_genre", "good": "À midi, le pain est encore frais.", "phenomene": "accord_nominal"}
+{"bad": "Dans la fable, le loup paraît cruelle.", "gabarit": "attribut_genre", "good": "Dans la fable, le loup paraît cruel.", "phenomene": "accord_nominal"}
+{"bad": "La princesse était très jaloux.", "gabarit": "attribut_genre", "good": "La princesse était très jalouse.", "phenomene": "accord_nominal"}
+{"bad": "Les routes sont dangereuse en hiver.", "gabarit": "attribut_nombre", "good": "Les routes sont dangereuses en hiver.", "phenomene": "accord_nominal"}
+{"bad": "La forêt est sombres et silencieuse.", "gabarit": "attribut_nombre", "good": "La forêt est sombre et silencieuse.", "phenomene": "accord_nominal"}
+{"bad": "Le chevalier est fiers.", "gabarit": "attribut_nombre", "good": "Le chevalier est fier.", "phenomene": "accord_nominal"}
+{"bad": "En novembre, les plages sont déserte.", "gabarit": "attribut_nombre", "good": "En novembre, les plages sont désertes.", "phenomene": "accord_nominal"}
+{"bad": "Le lac reste calmes malgré le vent.", "gabarit": "attribut_nombre", "good": "Le lac reste calme malgré le vent.", "phenomene": "accord_nominal"}
+{"bad": "Les journées sont longue en été.", "gabarit": "attribut_nombre", "good": "Les journées sont longues en été.", "phenomene": "accord_nominal"}
+{"bad": "Mon école est très grand.", "gabarit": "genre_nom", "good": "Mon école est très grande.", "phenomene": "accord_nominal"}
+{"bad": "Cette année-là, l'hiver fut très froide.", "gabarit": "genre_nom", "good": "Cette année-là, l'hiver fut très froid.", "phenomene": "accord_nominal"}
+{"bad": "Ma sœur porte des gants grises.", "gabarit": "genre_nom", "good": "Ma sœur porte des gants gris.", "phenomene": "accord_nominal"}
+{"bad": "Il a acheté des chaussures neufs.", "gabarit": "genre_nom", "good": "Il a acheté des chaussures neuves.", "phenomene": "accord_nominal"}
+{"bad": "L'armoire du grenier est très lourd.", "gabarit": "genre_nom", "good": "L'armoire du grenier est très lourde.", "phenomene": "accord_nominal"}
+{"bad": "Leur fils est très courageuse.", "gabarit": "genre_nom", "good": "Leur fils est très courageux.", "phenomene": "accord_nominal"}
+{"bad": "Le panier de ma grand-mère est légère.", "gabarit": "accord_distance", "good": "Le panier de ma grand-mère est léger.", "phenomene": "accord_nominal"}
+{"bad": "La cabane du berger est petit.", "gabarit": "accord_distance", "good": "La cabane du berger est petite.", "phenomene": "accord_nominal"}
+{"bad": "Les cerises du jardin sont mûrs.", "gabarit": "accord_distance", "good": "Les cerises du jardin sont mûres.", "phenomene": "accord_nominal"}
+{"bad": "Le chef des brigands était méchants.", "gabarit": "accord_distance", "good": "Le chef des brigands était méchant.", "phenomene": "accord_nominal"}
+{"bad": "Le vin de ces collines est bons.", "gabarit": "accord_distance", "good": "Le vin de ces collines est bon.", "phenomene": "accord_nominal"}
+{"bad": "L'histoire de ce vieux roi est vrai.", "gabarit": "accord_distance", "good": "L'histoire de ce vieux roi est vraie.", "phenomene": "accord_nominal"}
+{"bad": "Le facteur a arrivé ce matin.", "gabarit": "aux_etre", "good": "Le facteur est arrivé ce matin.", "phenomene": "participe_passe"}
+{"bad": "Mon oncle a venu nous voir dimanche.", "gabarit": "aux_etre", "good": "Mon oncle est venu nous voir dimanche.", "phenomene": "participe_passe"}
+{"bad": "Le vieux chien a mort cet hiver.", "gabarit": "aux_etre", "good": "Le vieux chien est mort cet hiver.", "phenomene": "participe_passe"}
+{"bad": "Victor Hugo a né à Besançon.", "gabarit": "aux_etre", "good": "Victor Hugo est né à Besançon.", "phenomene": "participe_passe"}
+{"bad": "Son fils a devenu médecin.", "gabarit": "aux_etre", "good": "Son fils est devenu médecin.", "phenomene": "participe_passe"}
+{"bad": "Mon cousin avait allé au jardin.", "gabarit": "aux_etre", "good": "Mon cousin était allé au jardin.", "phenomene": "participe_passe"}
+{"bad": "Le train avait arrivé depuis une heure.", "gabarit": "aux_etre", "good": "Le train était arrivé depuis une heure.", "phenomene": "participe_passe"}
+{"bad": "Il aura revenu avant la nuit.", "gabarit": "aux_etre", "good": "Il sera revenu avant la nuit.", "phenomene": "participe_passe"}
+{"bad": "Tu as venu trop tard.", "gabarit": "aux_etre", "good": "Tu es venu trop tard.", "phenomene": "participe_passe"}
+{"bad": "Il aurait mort sans ton aide.", "gabarit": "aux_etre", "good": "Il serait mort sans ton aide.", "phenomene": "participe_passe"}
+{"bad": "Après avoir devenu roi, il oublia ses amis.", "gabarit": "aux_etre", "good": "Après être devenu roi, il oublia ses amis.", "phenomene": "participe_passe"}
+{"bad": "Dès qu'il eut revenu, la fête commença.", "gabarit": "aux_etre", "good": "Dès qu'il fut revenu, la fête commença.", "phenomene": "participe_passe"}
+{"bad": "Il est plu toute la nuit.", "gabarit": "aux_avoir", "good": "Il a plu toute la nuit.", "phenomene": "participe_passe"}
+{"bad": "Le chien est aboyé contre les passants.", "gabarit": "aux_avoir", "good": "Le chien a aboyé contre les passants.", "phenomene": "participe_passe"}
+{"bad": "Le fermier est dormi dans la grange.", "gabarit": "aux_avoir", "good": "Le fermier a dormi dans la grange.", "phenomene": "participe_passe"}
+{"bad": "Il est souri à son voisin.", "gabarit": "aux_avoir", "good": "Il a souri à son voisin.", "phenomene": "participe_passe"}
+{"bad": "Le soldat est marché jusqu'au village.", "gabarit": "aux_avoir", "good": "Le soldat a marché jusqu'au village.", "phenomene": "participe_passe"}
+{"bad": "Tu es beaucoup hésité avant de répondre.", "gabarit": "aux_avoir", "good": "Tu as beaucoup hésité avant de répondre.", "phenomene": "participe_passe"}
+{"bad": "Le vieillard était toussé toute la soirée.", "gabarit": "aux_avoir", "good": "Le vieillard avait toussé toute la soirée.", "phenomene": "participe_passe"}
+{"bad": "Il est neigé sur la montagne.", "gabarit": "aux_avoir", "good": "Il a neigé sur la montagne.", "phenomene": "participe_passe"}
+{"bad": "Le professeur est lu ce roman deux fois.", "gabarit": "aux_avoir", "good": "Le professeur a lu ce roman deux fois.", "phenomene": "participe_passe"}
+{"bad": "Quand il fut dîné, il sortit.", "gabarit": "aux_avoir", "good": "Quand il eut dîné, il sortit.", "phenomene": "participe_passe"}
+{"bad": "Il serait ri de cette histoire.", "gabarit": "aux_avoir", "good": "Il aurait ri de cette histoire.", "phenomene": "participe_passe"}
+{"bad": "Ce roi est régné quarante ans.", "gabarit": "aux_avoir", "good": "Ce roi a régné quarante ans.", "phenomene": "participe_passe"}
+{"bad": "Ma tante est arrivé hier soir.", "gabarit": "accord_genre", "good": "Ma tante est arrivée hier soir.", "phenomene": "participe_passe"}
+{"bad": "Le boulanger est partie très tôt.", "gabarit": "accord_genre", "good": "Le boulanger est parti très tôt.", "phenomene": "participe_passe"}
+{"bad": "La reine est mort en exil.", "gabarit": "accord_genre", "good": "La reine est morte en exil.", "phenomene": "participe_passe"}
+{"bad": "Le petit garçon est tombée du mur.", "gabarit": "accord_genre", "good": "Le petit garçon est tombé du mur.", "phenomene": "participe_passe"}
+{"bad": "Elle est né dans un petit village.", "gabarit": "accord_genre", "good": "Elle est née dans un petit village.", "phenomene": "participe_passe"}
+{"bad": "Il est venue seul à la fête.", "gabarit": "accord_genre", "good": "Il est venu seul à la fête.", "phenomene": "participe_passe"}
+{"bad": "La jeune fille était sorti sans manteau.", "gabarit": "accord_genre", "good": "La jeune fille était sortie sans manteau.", "phenomene": "participe_passe"}
+{"bad": "Le vieux marin est retournée en Bretagne.", "gabarit": "accord_genre", "good": "Le vieux marin est retourné en Bretagne.", "phenomene": "participe_passe"}
+{"bad": "Les hirondelles sont revenue au printemps.", "gabarit": "accord_nombre", "good": "Les hirondelles sont revenues au printemps.", "phenomene": "participe_passe"}
+{"bad": "Mes amis sont parti sans moi.", "gabarit": "accord_nombre", "good": "Mes amis sont partis sans moi.", "phenomene": "participe_passe"}
+{"bad": "Le voyageur est descendus du train.", "gabarit": "accord_nombre", "good": "Le voyageur est descendu du train.", "phenomene": "participe_passe"}
+{"bad": "Les feuilles sont tombée dans la cour.", "gabarit": "accord_nombre", "good": "Les feuilles sont tombées dans la cour.", "phenomene": "participe_passe"}
+{"bad": "La lettre est arrivées avec un jour de retard.", "gabarit": "accord_nombre", "good": "La lettre est arrivée avec un jour de retard.", "phenomene": "participe_passe"}
+{"bad": "L'oiseau est sortis de sa cage.", "gabarit": "accord_nombre", "good": "L'oiseau est sorti de sa cage.", "phenomene": "participe_passe"}
+{"bad": "Elles étaient venue pour le mariage.", "gabarit": "accord_nombre", "good": "Elles étaient venues pour le mariage.", "phenomene": "participe_passe"}
+{"bad": "Mon père est montés au grenier.", "gabarit": "accord_nombre", "good": "Mon père est monté au grenier.", "phenomene": "participe_passe"}
+{"bad": "Elle s'est évanoui de peur.", "gabarit": "pronominal", "good": "Elle s'est évanouie de peur.", "phenomene": "participe_passe"}
+{"bad": "Le prisonnier s'est enfuie pendant la nuit.", "gabarit": "pronominal", "good": "Le prisonnier s'est enfui pendant la nuit.", "phenomene": "participe_passe"}
+{"bad": "Les pigeons se sont envolé.", "gabarit": "pronominal", "good": "Les pigeons se sont envolés.", "phenomene": "participe_passe"}
+{"bad": "Mon frère s'est souvenue de cette histoire.", "gabarit": "pronominal", "good": "Mon frère s'est souvenu de cette histoire.", "phenomene": "participe_passe"}
+{"bad": "Les femmes se sont agenouillée dans l'église.", "gabarit": "pronominal", "good": "Les femmes se sont agenouillées dans l'église.", "phenomene": "participe_passe"}
+{"bad": "Le chat s'est emparée du poisson.", "gabarit": "pronominal", "good": "Le chat s'est emparé du poisson.", "phenomene": "participe_passe"}
+{"bad": "La maison a été construit par mon grand-père.", "gabarit": "passif", "good": "La maison a été construite par mon grand-père.", "phenomene": "participe_passe"}
+{"bad": "Le pont fut détruite pendant la guerre.", "gabarit": "passif", "good": "Le pont fut détruit pendant la guerre.", "phenomene": "participe_passe"}
+{"bad": "Ces lettres ont été écrite par un poète.", "gabarit": "passif", "good": "Ces lettres ont été écrites par un poète.", "phenomene": "participe_passe"}
+{"bad": "Le voleur a été arrêtée par la police.", "gabarit": "passif", "good": "Le voleur a été arrêté par la police.", "phenomene": "participe_passe"}
+{"bad": "Les portes seront fermés à minuit.", "gabarit": "passif", "good": "Les portes seront fermées à minuit.", "phenomene": "participe_passe"}
+{"bad": "Le repas est servis dans la grande salle.", "gabarit": "passif", "good": "Le repas est servi dans la grande salle.", "phenomene": "participe_passe"}
+{"bad": "Il a prendu le train de nuit.", "gabarit": "forme_irreguliere", "good": "Il a pris le train de nuit.", "phenomene": "participe_passe"}
+{"bad": "J'ai faisé mes devoirs avant le dîner.", "gabarit": "forme_irreguliere", "good": "J'ai fait mes devoirs avant le dîner.", "phenomene": "participe_passe"}
+{"bad": "Elle a mettu sa robe bleue.", "gabarit": "forme_irreguliere", "good": "Elle a mis sa robe bleue.", "phenomene": "participe_passe"}
+{"bad": "Le notaire a écrivé une longue lettre.", "gabarit": "forme_irreguliere", "good": "Le notaire a écrit une longue lettre.", "phenomene": "participe_passe"}
+{"bad": "Nous avons buvé un verre d'eau.", "gabarit": "forme_irreguliere", "good": "Nous avons bu un verre d'eau.", "phenomene": "participe_passe"}
+{"bad": "Elle a recevu un bouquet de fleurs.", "gabarit": "forme_irreguliere", "good": "Elle a reçu un bouquet de fleurs.", "phenomene": "participe_passe"}
+{"bad": "Le marchand a ouvri sa boutique.", "gabarit": "forme_irreguliere", "good": "Le marchand a ouvert sa boutique.", "phenomene": "participe_passe"}
+{"bad": "Ma grand-mère a vivé à la campagne.", "gabarit": "forme_irreguliere", "good": "Ma grand-mère a vécu à la campagne.", "phenomene": "participe_passe"}
+{"bad": "Le garçon a couri jusqu'à la gare.", "gabarit": "forme_irreguliere", "good": "Le garçon a couru jusqu'à la gare.", "phenomene": "participe_passe"}
+{"bad": "Le renard a manger la poule.", "gabarit": "participe_infinitif", "good": "Le renard a mangé la poule.", "phenomene": "participe_passe"}
+{"bad": "Nous avons travailler tout l'été.", "gabarit": "participe_infinitif", "good": "Nous avons travaillé tout l'été.", "phenomene": "participe_passe"}
+{"bad": "Elle a fermer la fenêtre.", "gabarit": "participe_infinitif", "good": "Elle a fermé la fenêtre.", "phenomene": "participe_passe"}
+{"bad": "Le jardinier a couper les roses.", "gabarit": "participe_infinitif", "good": "Le jardinier a coupé les roses.", "phenomene": "participe_passe"}
+{"bad": "Les fenêtres sont fermer depuis hier.", "gabarit": "participe_infinitif", "good": "Les fenêtres sont fermées depuis hier.", "phenomene": "participe_passe"}
+{"bad": "Les cerises sont tomber de l'arbre.", "gabarit": "participe_infinitif", "good": "Les cerises sont tombées de l'arbre.", "phenomene": "participe_passe"}
+{"bad": "Les voisines sont passer nous voir.", "gabarit": "participe_infinitif", "good": "Les voisines sont passées nous voir.", "phenomene": "participe_passe"}
+{"bad": "Les lettres sont arriver ce matin.", "gabarit": "participe_infinitif", "good": "Les lettres sont arrivées ce matin.", "phenomene": "participe_passe"}
+{"bad": "Le paysan plante le arbre au bout du champ.", "gabarit": "article_voyelle", "good": "Le paysan plante l'arbre au bout du champ.", "phenomene": "elision"}
+{"bad": "La eau de la rivière est très froide.", "gabarit": "article_voyelle", "good": "L'eau de la rivière est très froide.", "phenomene": "elision"}
+{"bad": "Le enfant joue seul dans la cour.", "gabarit": "article_voyelle", "good": "L'enfant joue seul dans la cour.", "phenomene": "elision"}
+{"bad": "Le orage gronde au-dessus de la ville.", "gabarit": "article_voyelle", "good": "L'orage gronde au-dessus de la ville.", "phenomene": "elision"}
+{"bad": "Le homme marche lentement sur la route.", "gabarit": "article_h_muet", "good": "L'homme marche lentement sur la route.", "phenomene": "elision"}
+{"bad": "Les vaches mangent la herbe du pré.", "gabarit": "article_h_muet", "good": "Les vaches mangent l'herbe du pré.", "phenomene": "elision"}
+{"bad": "Le hiver arrive avec la neige et le froid.", "gabarit": "article_h_muet", "good": "L'hiver arrive avec la neige et le froid.", "phenomene": "elision"}
+{"bad": "Le vieux marin raconte la histoire de son naufrage.", "gabarit": "article_h_muet", "good": "Le vieux marin raconte l'histoire de son naufrage.", "phenomene": "elision"}
+{"bad": "La héroïne du roman meurt à la fin.", "gabarit": "article_h_muet", "good": "L'héroïne du roman meurt à la fin.", "phenomene": "elision"}
+{"bad": "La heure du départ approche enfin.", "gabarit": "article_h_muet", "good": "L'heure du départ approche enfin.", "phenomene": "elision"}
+{"bad": "Le voyageur cherche le hôtel de la gare.", "gabarit": "article_h_muet", "good": "Le voyageur cherche l'hôtel de la gare.", "phenomene": "elision"}
+{"bad": "L'héros revient enfin dans son village.", "gabarit": "article_h_aspire", "good": "Le héros revient enfin dans son village.", "phenomene": "elision"}
+{"bad": "Le bûcheron saisit l'hache sans un mot.", "gabarit": "article_h_aspire", "good": "Le bûcheron saisit la hache sans un mot.", "phenomene": "elision"}
+{"bad": "On entend l'hibou au fond du bois.", "gabarit": "article_h_aspire", "good": "On entend le hibou au fond du bois.", "phenomene": "elision"}
+{"bad": "Le jardinier taille l'haie devant la maison.", "gabarit": "article_h_aspire", "good": "Le jardinier taille la haie devant la maison.", "phenomene": "elision"}
+{"bad": "L'hasard fait bien les choses.", "gabarit": "article_h_aspire", "good": "Le hasard fait bien les choses.", "phenomene": "elision"}
+{"bad": "L'héron traverse le marais sans bruit.", "gabarit": "article_h_aspire", "good": "Le héron traverse le marais sans bruit.", "phenomene": "elision"}
+{"bad": "Mon grand-père a mal à l'hanche.", "gabarit": "article_h_aspire", "good": "Mon grand-père a mal à la hanche.", "phenomene": "elision"}
+{"bad": "Elle a beaucoup de amis au village.", "gabarit": "de_voyelle", "good": "Elle a beaucoup d'amis au village.", "phenomene": "elision"}
+{"bad": "Le jeune soldat est plein de espoir.", "gabarit": "de_voyelle", "good": "Le jeune soldat est plein d'espoir.", "phenomene": "elision"}
+{"bad": "Le roi porte une couronne de or.", "gabarit": "de_voyelle", "good": "Le roi porte une couronne d'or.", "phenomene": "elision"}
+{"bad": "De habitude, il se lève avant le jour.", "gabarit": "de_h_muet", "good": "D'habitude, il se lève avant le jour.", "phenomene": "elision"}
+{"bad": "Elle achète une bouteille de huile.", "gabarit": "de_h_muet", "good": "Elle achète une bouteille d'huile.", "phenomene": "elision"}
+{"bad": "Il a donné sa parole de honneur.", "gabarit": "de_h_muet", "good": "Il a donné sa parole d'honneur.", "phenomene": "elision"}
+{"bad": "Elle pousse un cri de horreur.", "gabarit": "de_h_muet", "good": "Elle pousse un cri d'horreur.", "phenomene": "elision"}
+{"bad": "Il rougit d'honte devant son père.", "gabarit": "de_h_aspire", "good": "Il rougit de honte devant son père.", "phenomene": "elision"}
+{"bad": "Son cœur est plein d'haine.", "gabarit": "de_h_aspire", "good": "Son cœur est plein de haine.", "phenomene": "elision"}
+{"bad": "Le mur mesure deux mètres d'hauteur.", "gabarit": "de_h_aspire", "good": "Le mur mesure deux mètres de hauteur.", "phenomene": "elision"}
+{"bad": "Le mendiant est vêtu d'haillons.", "gabarit": "de_h_aspire", "good": "Le mendiant est vêtu de haillons.", "phenomene": "elision"}
+{"bad": "Je aime la musique de mon pays.", "gabarit": "clitique_voyelle", "good": "J'aime la musique de mon pays.", "phenomene": "elision"}
+{"bad": "Ma mère me appelle depuis le jardin.", "gabarit": "clitique_voyelle", "good": "Ma mère m'appelle depuis le jardin.", "phenomene": "elision"}
+{"bad": "Il ne y a plus de pain à la maison.", "gabarit": "clitique_voyelle", "good": "Il n'y a plus de pain à la maison.", "phenomene": "elision"}
+{"bad": "Je habite près de la gare depuis un an.", "gabarit": "clitique_h_muet", "good": "J'habite près de la gare depuis un an.", "phenomene": "elision"}
+{"bad": "Je hérite de la maison de mon oncle.", "gabarit": "clitique_h_muet", "good": "J'hérite de la maison de mon oncle.", "phenomene": "elision"}
+{"bad": "Elle se habille vite le matin.", "gabarit": "clitique_h_muet", "good": "Elle s'habille vite le matin.", "phenomene": "elision"}
+{"bad": "Le chien se habitue à son nouveau maître.", "gabarit": "clitique_h_muet", "good": "Le chien s'habitue à son nouveau maître.", "phenomene": "elision"}
+{"bad": "Le capitaine ne hésite jamais devant le danger.", "gabarit": "clitique_h_muet", "good": "Le capitaine n'hésite jamais devant le danger.", "phenomene": "elision"}
+{"bad": "Tout le village le honore comme un saint.", "gabarit": "clitique_h_muet", "good": "Tout le village l'honore comme un saint.", "phenomene": "elision"}
+{"bad": "J'hais le mensonge et la flatterie.", "gabarit": "clitique_h_aspire", "good": "Je hais le mensonge et la flatterie.", "phenomene": "elision"}
+{"bad": "J'hausse les épaules sans répondre.", "gabarit": "clitique_h_aspire", "good": "Je hausse les épaules sans répondre.", "phenomene": "elision"}
+{"bad": "Le loup n'hurle plus dans la forêt.", "gabarit": "clitique_h_aspire", "good": "Le loup ne hurle plus dans la forêt.", "phenomene": "elision"}
+{"bad": "Je m'hâte de rentrer avant le soir.", "gabarit": "clitique_h_aspire", "good": "Je me hâte de rentrer avant le soir.", "phenomene": "elision"}
+{"bad": "Ce souvenir l'hante encore aujourd'hui.", "gabarit": "clitique_h_aspire", "good": "Ce souvenir le hante encore aujourd'hui.", "phenomene": "elision"}
+{"bad": "Le chat s'hisse sur le mur du jardin.", "gabarit": "clitique_h_aspire", "good": "Le chat se hisse sur le mur du jardin.", "phenomene": "elision"}
+{"bad": "Il faut que elle parte avant la nuit.", "gabarit": "que_et_composes", "good": "Il faut qu'elle parte avant la nuit.", "phenomene": "elision"}
+{"bad": "Le pauvre berger n'a que à attendre le printemps.", "gabarit": "que_et_composes", "good": "Le pauvre berger n'a qu'à attendre le printemps.", "phenomene": "elision"}
+{"bad": "Lorsque il entra, tout le monde se tut.", "gabarit": "que_et_composes", "good": "Lorsqu'il entra, tout le monde se tut.", "phenomene": "elision"}
+{"bad": "Nous avons dansé jusque au matin.", "gabarit": "que_et_composes", "good": "Nous avons dansé jusqu'au matin.", "phenomene": "elision"}
+{"bad": "Si il pleut demain, nous resterons ici.", "gabarit": "si_il", "good": "S'il pleut demain, nous resterons ici.", "phenomene": "elision"}
+{"bad": "Je ne sais pas si il dort encore.", "gabarit": "si_il", "good": "Je ne sais pas s'il dort encore.", "phenomene": "elision"}
+{"bad": "Si ils arrivent tôt, nous dînerons ensemble.", "gabarit": "si_il", "good": "S'ils arrivent tôt, nous dînerons ensemble.", "phenomene": "elision"}
+{"bad": "Ce est la plus belle saison de l'année.", "gabarit": "ce_elide", "good": "C'est la plus belle saison de l'année.", "phenomene": "elision"}
+{"bad": "Ce était un soir d'hiver, près du feu.", "gabarit": "ce_elide", "good": "C'était un soir d'hiver, près du feu.", "phenomene": "elision"}
+{"bad": "Ce en est trop pour moi.", "gabarit": "ce_elide", "good": "C'en est trop pour moi.", "phenomene": "elision"}
+{"bad": "S'elle vient, nous partirons à midi.", "gabarit": "si_sans_elision", "good": "Si elle vient, nous partirons à midi.", "phenomene": "elision"}
+{"bad": "Je me demande s'elle viendra ce soir.", "gabarit": "si_sans_elision", "good": "Je me demande si elle viendra ce soir.", "phenomene": "elision"}
+{"bad": "S'on frappe, ouvre la porte.", "gabarit": "si_sans_elision", "good": "Si on frappe, ouvre la porte.", "phenomene": "elision"}
+{"bad": "S'un enfant pleure, il faut le consoler.", "gabarit": "si_sans_elision", "good": "Si un enfant pleure, il faut le consoler.", "phenomene": "elision"}
+{"bad": "S'une lettre arrive, préviens-moi.", "gabarit": "si_sans_elision", "good": "Si une lettre arrive, préviens-moi.", "phenomene": "elision"}
+{"bad": "Demande-lui s'on peut entrer.", "gabarit": "si_sans_elision", "good": "Demande-lui si on peut entrer.", "phenomene": "elision"}
+{"bad": "S'elles chantent, le public applaudira.", "gabarit": "si_sans_elision", "good": "Si elles chantent, le public applaudira.", "phenomene": "elision"}
+{"bad": "Laisse-l'entrer dans la maison.", "gabarit": "imperatif_sans_elision", "good": "Laisse-le entrer dans la maison.", "phenomene": "elision"}
+{"bad": "Mets-l'au chaud dans la cuisine.", "gabarit": "imperatif_sans_elision", "good": "Mets-le au chaud dans la cuisine.", "phenomene": "elision"}
+{"bad": "Accompagne-l'à la gare demain matin.", "gabarit": "imperatif_sans_elision", "good": "Accompagne-la à la gare demain matin.", "phenomene": "elision"}
+{"bad": "Garde-l'avec toi jusqu'au soir.", "gabarit": "imperatif_sans_elision", "good": "Garde-la avec toi jusqu'au soir.", "phenomene": "elision"}
+{"bad": "Invite-l'à dîner ce soir.", "gabarit": "imperatif_sans_elision", "good": "Invite-le à dîner ce soir.", "phenomene": "elision"}
+{"bad": "Fais-l'asseoir près de la fenêtre.", "gabarit": "imperatif_sans_elision", "good": "Fais-la asseoir près de la fenêtre.", "phenomene": "elision"}
+{"bad": "Pose-l'ici, sur la table.", "gabarit": "imperatif_sans_elision", "good": "Pose-le ici, sur la table.", "phenomene": "elision"}
+{"bad": "Ma mère va à le marché le samedi.", "gabarit": "contraction_a", "good": "Ma mère va au marché le samedi.", "phenomene": "prepositions"}
+{"bad": "Le maître parle à les enfants avec douceur.", "gabarit": "contraction_a", "good": "Le maître parle aux enfants avec douceur.", "phenomene": "prepositions"}
+{"bad": "Nous pensons souvent à le voyage de l'an dernier.", "gabarit": "contraction_a", "good": "Nous pensons souvent au voyage de l'an dernier.", "phenomene": "prepositions"}
+{"bad": "Le vieillard donne du pain à les pauvres.", "gabarit": "contraction_a", "good": "Le vieillard donne du pain aux pauvres.", "phenomene": "prepositions"}
+{"bad": "Il a attaché son cheval au arbre.", "gabarit": "contraction_a", "good": "Il a attaché son cheval à l'arbre.", "phenomene": "prepositions"}
+{"bad": "Mon frère entre au internat en septembre.", "gabarit": "contraction_a", "good": "Mon frère entre à l'internat en septembre.", "phenomene": "prepositions"}
+{"bad": "La maison de les voisins a un grand jardin.", "gabarit": "contraction_de", "good": "La maison des voisins a un grand jardin.", "phenomene": "prepositions"}
+{"bad": "Le bruit de le moulin réveille le village.", "gabarit": "contraction_de", "good": "Le bruit du moulin réveille le village.", "phenomene": "prepositions"}
+{"bad": "Le fils de le roi monte un cheval blanc.", "gabarit": "contraction_de", "good": "Le fils du roi monte un cheval blanc.", "phenomene": "prepositions"}
+{"bad": "On entend le chant de les oiseaux au printemps.", "gabarit": "contraction_de", "good": "On entend le chant des oiseaux au printemps.", "phenomene": "prepositions"}
+{"bad": "La porte du atelier reste ouverte.", "gabarit": "contraction_de", "good": "La porte de l'atelier reste ouverte.", "phenomene": "prepositions"}
+{"bad": "La chaleur du été entre dans la chambre.", "gabarit": "contraction_de", "good": "La chaleur de l'été entre dans la chambre.", "phenomene": "prepositions"}
+{"bad": "Le boulanger vend de le pain frais.", "gabarit": "partitif", "good": "Le boulanger vend du pain frais.", "phenomene": "prepositions"}
+{"bad": "Mon grand-père boit de le vin au dîner.", "gabarit": "partitif", "good": "Mon grand-père boit du vin au dîner.", "phenomene": "prepositions"}
+{"bad": "Elle met de le sucre dans son café.", "gabarit": "partitif", "good": "Elle met du sucre dans son café.", "phenomene": "prepositions"}
+{"bad": "Le cuisinier ajoute du ail dans la sauce.", "gabarit": "partitif", "good": "Le cuisinier ajoute de l'ail dans la sauce.", "phenomene": "prepositions"}
+{"bad": "L'infirmière verse du alcool sur la plaie.", "gabarit": "partitif", "good": "L'infirmière verse de l'alcool sur la plaie.", "phenomene": "prepositions"}
+{"bad": "Mon cousin a gagné du argent cet automne.", "gabarit": "partitif", "good": "Mon cousin a gagné de l'argent cet automne.", "phenomene": "prepositions"}
+{"bad": "Il a commencé au lire hier soir.", "gabarit": "pronom_infinitif", "good": "Il a commencé à le lire hier soir.", "phenomene": "prepositions"}
+{"bad": "Elle a réussi au convaincre.", "gabarit": "pronom_infinitif", "good": "Elle a réussi à le convaincre.", "phenomene": "prepositions"}
+{"bad": "Nous avons décidé des inviter.", "gabarit": "pronom_infinitif", "good": "Nous avons décidé de les inviter.", "phenomene": "prepositions"}
+{"bad": "Le vieux soldat refuse du suivre.", "gabarit": "pronom_infinitif", "good": "Le vieux soldat refuse de le suivre.", "phenomene": "prepositions"}
+{"bad": "Il faut penser aux prévenir.", "gabarit": "pronom_infinitif", "good": "Il faut penser à les prévenir.", "phenomene": "prepositions"}
+{"bad": "Le berger essaie des rassembler.", "gabarit": "pronom_infinitif", "good": "Le berger essaie de les rassembler.", "phenomene": "prepositions"}
+{"bad": "Le médecin a promis du soigner.", "gabarit": "pronom_infinitif", "good": "Le médecin a promis de le soigner.", "phenomene": "prepositions"}
+{"bad": "Les parents cherchent aux protéger.", "gabarit": "pronom_infinitif", "good": "Les parents cherchent à les protéger.", "phenomene": "prepositions"}
+{"bad": "Le professeur continue aux encourager.", "gabarit": "pronom_infinitif", "good": "Le professeur continue à les encourager.", "phenomene": "prepositions"}
+{"bad": "Il a oublié des remercier.", "gabarit": "pronom_infinitif", "good": "Il a oublié de les remercier.", "phenomene": "prepositions"}
+{"bad": "La reine hésite au punir.", "gabarit": "pronom_infinitif", "good": "La reine hésite à le punir.", "phenomene": "prepositions"}
+{"bad": "Mon grand-père m'a appris aux reconnaître.", "gabarit": "pronom_infinitif", "good": "Mon grand-père m'a appris à les reconnaître.", "phenomene": "prepositions"}
+{"bad": "Mon oncle habite en Paris depuis longtemps.", "gabarit": "ville", "good": "Mon oncle habite à Paris depuis longtemps.", "phenomene": "prepositions"}
+{"bad": "Nous passerons l'hiver en Rome.", "gabarit": "ville", "good": "Nous passerons l'hiver à Rome.", "phenomene": "prepositions"}
+{"bad": "Elle a étudié la peinture en Venise.", "gabarit": "ville", "good": "Elle a étudié la peinture à Venise.", "phenomene": "prepositions"}
+{"bad": "Le navire arrive en Marseille demain matin.", "gabarit": "ville", "good": "Le navire arrive à Marseille demain matin.", "phenomene": "prepositions"}
+{"bad": "Mon cousin travaille en Londres.", "gabarit": "ville", "good": "Mon cousin travaille à Londres.", "phenomene": "prepositions"}
+{"bad": "Les comédiens jouent ce soir en Lyon.", "gabarit": "ville", "good": "Les comédiens jouent ce soir à Lyon.", "phenomene": "prepositions"}
+{"bad": "Il est né en Nantes.", "gabarit": "ville", "good": "Il est né à Nantes.", "phenomene": "prepositions"}
+{"bad": "Mon ami vit en Lisbonne depuis un an.", "gabarit": "ville", "good": "Mon ami vit à Lisbonne depuis un an.", "phenomene": "prepositions"}
+{"bad": "Le train s'arrête en Bordeaux.", "gabarit": "ville", "good": "Le train s'arrête à Bordeaux.", "phenomene": "prepositions"}
+{"bad": "Ma tante vit à France depuis dix ans.", "gabarit": "pays_feminin", "good": "Ma tante vit en France depuis dix ans.", "phenomene": "prepositions"}
+{"bad": "Ils ont fait un long voyage au Italie.", "gabarit": "pays_feminin", "good": "Ils ont fait un long voyage en Italie.", "phenomene": "prepositions"}
+{"bad": "Le peintre est parti à Espagne.", "gabarit": "pays_feminin", "good": "Le peintre est parti en Espagne.", "phenomene": "prepositions"}
+{"bad": "Mes grands-parents habitent au Pologne.", "gabarit": "pays_feminin", "good": "Mes grands-parents habitent en Pologne.", "phenomene": "prepositions"}
+{"bad": "Le jeune homme fit ses études à Allemagne.", "gabarit": "pays_feminin", "good": "Le jeune homme fit ses études en Allemagne.", "phenomene": "prepositions"}
+{"bad": "On cultive beaucoup de riz au Chine.", "gabarit": "pays_feminin", "good": "On cultive beaucoup de riz en Chine.", "phenomene": "prepositions"}
+{"bad": "Le poète anglais est mort au Grèce.", "gabarit": "pays_feminin", "good": "Le poète anglais est mort en Grèce.", "phenomene": "prepositions"}
+{"bad": "Il a vécu longtemps au Suède.", "gabarit": "pays_feminin", "good": "Il a vécu longtemps en Suède.", "phenomene": "prepositions"}
+{"bad": "Ma cousine est partie vivre à le Japon.", "gabarit": "pays_masculin", "good": "Ma cousine est partie vivre au Japon.", "phenomene": "prepositions"}
+{"bad": "Le café pousse bien à Brésil.", "gabarit": "pays_masculin", "good": "Le café pousse bien au Brésil.", "phenomene": "prepositions"}
+{"bad": "Son neveu s'est installé à Liban.", "gabarit": "pays_masculin", "good": "Son neveu s'est installé au Liban.", "phenomene": "prepositions"}
+{"bad": "Il fait très froid l'hiver à le Canada.", "gabarit": "pays_masculin", "good": "Il fait très froid l'hiver au Canada.", "phenomene": "prepositions"}
+{"bad": "Les explorateurs sont arrivés à le Pérou.", "gabarit": "pays_masculin", "good": "Les explorateurs sont arrivés au Pérou.", "phenomene": "prepositions"}
+{"bad": "Ce grand volcan se trouve à Chili.", "gabarit": "pays_masculin", "good": "Ce grand volcan se trouve au Chili.", "phenomene": "prepositions"}
+{"bad": "Mon voisin a longtemps travaillé à le Cameroun.", "gabarit": "pays_masculin", "good": "Mon voisin a longtemps travaillé au Cameroun.", "phenomene": "prepositions"}
+{"bad": "Ma sœur fait ses études en États-Unis.", "gabarit": "pays_pluriel", "good": "Ma sœur fait ses études aux États-Unis.", "phenomene": "prepositions"}
+{"bad": "Les tulipes poussent partout en Pays-Bas.", "gabarit": "pays_pluriel", "good": "Les tulipes poussent partout aux Pays-Bas.", "phenomene": "prepositions"}
+{"bad": "Ils passent leurs vacances à les Antilles.", "gabarit": "pays_pluriel", "good": "Ils passent leurs vacances aux Antilles.", "phenomene": "prepositions"}
+{"bad": "Son aïeul avait fait fortune à les Indes.", "gabarit": "pays_pluriel", "good": "Son aïeul avait fait fortune aux Indes.", "phenomene": "prepositions"}
+{"bad": "Le missionnaire est parti à Philippines.", "gabarit": "pays_pluriel", "good": "Le missionnaire est parti aux Philippines.", "phenomene": "prepositions"}
+{"bad": "Le navigateur fait escale à Açores.", "gabarit": "pays_pluriel", "good": "Le navigateur fait escale aux Açores.", "phenomene": "prepositions"}
+{"bad": "Mon père revient de Japon demain.", "gabarit": "provenance", "good": "Mon père revient du Japon demain.", "phenomene": "prepositions"}
+{"bad": "Ces oranges viennent du Espagne.", "gabarit": "provenance", "good": "Ces oranges viennent d'Espagne.", "phenomene": "prepositions"}
+{"bad": "Elle rentre du Norvège la semaine prochaine.", "gabarit": "provenance", "good": "Elle rentre de Norvège la semaine prochaine.", "phenomene": "prepositions"}
+{"bad": "Les voyageurs arrivent de les États-Unis ce soir.", "gabarit": "provenance", "good": "Les voyageurs arrivent des États-Unis ce soir.", "phenomene": "prepositions"}
+{"bad": "Mon oncle est revenu de le Portugal.", "gabarit": "provenance", "good": "Mon oncle est revenu du Portugal.", "phenomene": "prepositions"}
+{"bad": "Ce marbre blanc vient du Italie.", "gabarit": "provenance", "good": "Ce marbre blanc vient d'Italie.", "phenomene": "prepositions"}
+{"bad": "Ce fromage vient de Pays-Bas.", "gabarit": "provenance", "good": "Ce fromage vient des Pays-Bas.", "phenomene": "prepositions"}
+{"bad": "Ce tapis précieux vient du Iran.", "gabarit": "provenance", "good": "Ce tapis précieux vient d'Iran.", "phenomene": "prepositions"}
+{"bad": "Ces roses viennent du Équateur.", "gabarit": "provenance", "good": "Ces roses viennent d'Équateur.", "phenomene": "prepositions"}

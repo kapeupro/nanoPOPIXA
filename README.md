@@ -93,16 +93,33 @@ Dépendances : `torch >= 2.0`, `numpy`, `tiktoken`
 popixa prep --dataset shakespeare
 
 # 2. Entraîner un modèle nano (~0.9M params hors embeddings)
-#    CPU : ~10-15 min  |  Apple Silicon MPS : ~3-5 min  |  GPU CUDA : ~1-2 min
 popixa train --size nano --data_dir data/
 
 # 3. Discuter avec le modèle
 popixa chat
 ```
 
-Le modèle `nano` suffit pour tester toutes les fonctionnalités. Pour une meilleure qualité de génération, utilise `--size small` (~10M params, ~3× plus long à entraîner).
+Le modèle `nano` suffit pour tester toutes les fonctionnalités. Sans `--size`, `popixa train`
+entraîne un `small` (~10M params) : meilleure qualité de génération, mais ≈ 10× moins de tokens/s.
+
+**Durée** : `popixa bench --size nano` mesure le débit de TA machine et estime le temps
+d'entraînement. Repère mesuré sur un CPU 4 cœurs : un `nano` caractère fait 1 000 itérations
+(batch 16) en ~26 min — le preset complet (5 000 itérations, batch 32) prend plusieurs heures sur
+CPU ; un GPU ou Apple Silicon va beaucoup plus vite. Premier essai rapide sur CPU :
+
+```bash
+popixa prep --dataset hugo --char --data_dir data_hugo
+popixa train --size nano --data_dir data_hugo --max_iters 1000 --batch_size 16
+```
+
+Chiffres de référence (bpb, paires, débit) : [`evals/BASELINES.md`](evals/BASELINES.md).
 
 > **Apple Silicon (M1/M2/M3/M4)** : `--size medium` dépasse les 20 GB de mémoire MPS et plantera. Reste sur `nano` ou `small`.
+
+```bash
+# 4. Mesurer le modèle (bits par octet, paires minimales françaises, échantillons)
+popixa eval --data_dir data/ --out eval.json
+```
 
 ---
 
@@ -114,6 +131,9 @@ popixa chat                → chat avec le modèle entraîné
 popixa train               → lancer l'entraînement
 popixa prep                → télécharger et préparer un dataset
 popixa gen                 → générer du texte (non-interactif)
+popixa eval                → évaluer un checkpoint (bpb, paires FR, échantillons) → eval.json
+popixa bench               → débit d'entraînement / génération de TA machine
+popixa --version           → version installée
 popixa monitor             → dashboard live de la loss
 popixa scrape              → crawler web → corpus
 popixa collect SOURCE_DIR  → assembler du code source en corpus
@@ -123,12 +143,18 @@ popixa collect SOURCE_DIR  → assembler du code source en corpus
 
 ```bash
 popixa train --size nano --data_dir data/       # modèle léger, rapide
+popixa train --data_dir data/                   # small (défaut)
+popixa train --data_dir data/ --seed 42         # graine : init, dropout et batchs reproductibles
 popixa train --data_dir data/ --resume          # reprendre depuis checkpoint
 popixa train --size nano --data_dir data/ --longrope   # rope_base=500k (la fenêtre reste block_size)
 ```
 
-> `--resume` reprend l'architecture du checkpoint (un `--size`/`--longrope` différent est
-> signalé puis ignoré) et le modèle final est toujours sauvegardé en fin d'entraînement.
+> `--resume` reprend l'architecture du checkpoint et les réglages d'entraînement de son dernier
+> lancement (batch, LR, `max_iters`, `--batch_size` / `--max_iters` compris). Un `--batch_size` ou
+> `--max_iters` passé à la reprise remplace le réglage correspondant ; un `--size` différent de la taille
+> enregistrée applique le preset de cette taille (signalé, l'architecture ne change pas) ; un
+> `--longrope` différent est signalé puis ignoré. Checkpoints antérieurs à 2.2 : preset de leur taille.
+> Le modèle final est toujours sauvegardé en fin d'entraînement.
 
 ### Options chat
 
@@ -148,6 +174,34 @@ popixa gen --schema '{"type":"object","properties":{"nom":{"type":"string"}},"re
 ```
 
 `stdout` ne contient que le texte généré (`popixa gen --json > sortie.json`).
+
+### Mesurer : `popixa eval` et `popixa bench`
+
+```bash
+popixa eval --data_dir data/ --out eval.json    # les 3 tâches, échantillons dans samples.md
+popixa eval --tasks paires                      # sans données : paires minimales seules
+popixa eval --data_dir data/ --max_bytes 1000000  # bpb sur le 1er Mo de texte (plus rapide)
+popixa bench                                    # preset small (~15 s sur GPU, plusieurs minutes sur CPU)
+popixa bench --size medium --json               # sortie JSON
+```
+
+| Tâche | Ce qu'elle mesure |
+|---|---|
+| `bpb` | **Bits par octet** sur `val.bin` (fenêtres de `block_size` sans chevauchement). Divisé par les octets UTF-8 du texte, pas par les tokens : comparable entre tokenizer caractère et BPE. Plus bas = mieux. |
+| `paires` | **Paires minimales françaises** (`evals/fr_paires.jsonl`) : % de paires où la phrase correcte est plus probable que la fautive — accord sujet-verbe, accord nominal, participe passé, élision, prépositions. À comparer à `baseline_longueur` (score obtenu en préférant toujours la phrase la plus courte). |
+| `samples` | 20 amorces (`evals/prompts_fr.txt`) à graine fixe, 128 tokens chacune → `samples.md`, avec distinct-2 et taux de sorties répétitives. Une amorce que le tokenizer ne sait pas représenter (caractère hors vocabulaire) est signalée. |
+
+`eval.json` ne contient ni date ni durée, et l'empreinte du checkpoint est calculée sur les poids :
+deux évaluations des mêmes poids donnent le même fichier (même copié dans un autre dossier), on peut le versionner
+et le comparer. Le score des paires vient avec son intervalle de confiance à 95 % (≈ ± 5 points) :
+un écart plus petit n'est pas significatif. Chiffres de référence : [`evals/BASELINES.md`](evals/BASELINES.md).
+
+> `popixa eval` lit `evals/fr_paires.jsonl` et `evals/prompts_fr.txt` dans le dépôt : installe avec
+> `pip install -e .` (ou passe `--pairs` / `--prompts`).
+
+`popixa bench` mesure tokens/s en entraînement (forward + backward + AdamW, avec le dropout de
+`train.py`) et en génération (greedy, KV-cache), la mémoire et les TFLOPS effectifs, puis estime le
+temps pour 1 milliard de tokens d'entraînement sur ta machine.
 
 ### Commandes in-chat
 
@@ -227,6 +281,8 @@ popixa gen --schema '{"type":"object","properties":{"nom":{"type":"string"}},"re
 - **Gradient clipping** (1.0)
 - **Gradient accumulation** — simuler de grands batches
 - **Checkpoint resume** — reprendre un entraînement interrompu
+- **Graine fixe** (`--seed`, défaut 1337) — sur CPU, deux entraînements identiques donnent les mêmes
+  poids, bit à bit (sur GPU, certains noyaux ne sont pas déterministes)
 - **Streaming token par token** en chat
 
 ### Gestion du contexte
@@ -266,7 +322,9 @@ nanopopixa/
 ├── scrape.py      # Crawler web → corpus texte
 ├── splash.py      # Globe 3D + logo animé
 ├── popixa_cli.py  # Point d'entrée CLI unifié
-├── tests/         # Tests pytest (modèle, session, chat, structured outputs)
+├── popixa_eval.py # popixa eval (bpb, paires minimales, échantillons) + popixa bench
+├── evals/         # Paires minimales FR (générées par build_paires.py), amorces, baselines
+├── tests/         # Tests pytest (modèle, session, chat, structured outputs, eval)
 └── pyproject.toml # Package installable
 ```
 

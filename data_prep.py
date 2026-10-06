@@ -69,30 +69,32 @@ def _download_multi(urls: list, filepath: str) -> None:
 # ─── Tokenisation ─────────────────────────────────────────────────────────────
 def _tokenize_and_save(text: str, data_dir: str, use_tiktoken: bool = True) -> None:
     os.makedirs(data_dir, exist_ok=True)
+    # Coupe train/val à 90 % du TEXTE, avant tokenisation : val.bin contient le même texte quel
+    # que soit le tokenizer → bits par octet (popixa eval) comparables entre char et BPE
+    cut = int(len(text) * 0.9)
+    parts = (text[:cut], text[cut:])
 
     if use_tiktoken:
         try:
             import tiktoken
         except ImportError:
             raise ImportError("tiktoken requis pour BPE : pip install tiktoken")
-        enc    = tiktoken.get_encoding("gpt2")
-        tokens = np.array(enc.encode_ordinary(text), dtype=np.uint16)
-        n      = len(tokens)
-        tokens[:int(n * 0.9)].tofile(os.path.join(data_dir, "train.bin"))
-        tokens[int(n * 0.9):].tofile(os.path.join(data_dir, "val.bin"))
+        enc         = tiktoken.get_encoding("gpt2")
+        train, val  = (np.array(enc.encode_ordinary(t), dtype=np.uint16) for t in parts)
+        n           = len(train) + len(val)
         meta = {"vocab_size": enc.n_vocab, "tokenizer": "tiktoken_gpt2"}
         print(f"  Tokenizer : BPE tiktoken-gpt2 | {n:,} tokens | vocab {enc.n_vocab}")
     else:
-        chars      = sorted(set(text))
-        stoi       = {c: i for i, c in enumerate(chars)}
-        itos       = {i: c for i, c in enumerate(chars)}
-        data       = np.array([stoi[c] for c in text], dtype=np.uint16)
-        n          = len(data)
-        data[:int(n * 0.9)].tofile(os.path.join(data_dir, "train.bin"))
-        data[int(n * 0.9):].tofile(os.path.join(data_dir, "val.bin"))
+        chars       = sorted(set(text))
+        stoi        = {c: i for i, c in enumerate(chars)}
+        itos        = {i: c for i, c in enumerate(chars)}
+        train, val  = (np.array([stoi[c] for c in t], dtype=np.uint16) for t in parts)
+        n           = len(text)
         meta = {"vocab_size": len(chars), "tokenizer": "char",
                 "stoi": stoi, "itos": itos}
         print(f"  Tokenizer : caractère | {n:,} chars | vocab {len(chars)}")
+    train.tofile(os.path.join(data_dir, "train.bin"))
+    val.tofile(os.path.join(data_dir, "val.bin"))
 
     with open(os.path.join(data_dir, "meta.pkl"), "wb") as f:
         pickle.dump(meta, f)

@@ -15,8 +15,9 @@ ENV = dict(os.environ, PYTHONPATH=ROOT, OMP_NUM_THREADS="1")
 
 
 def _train(tmp_path, *extra, size="nano"):
+    size_args = ["--size", size] if size else []
     return subprocess.run(
-        [sys.executable, os.path.join(ROOT, "train.py"), "--size", size, "--batch_size", "2", *extra],
+        [sys.executable, os.path.join(ROOT, "train.py"), *size_args, "--batch_size", "2", *extra],
         cwd=str(tmp_path), env=ENV, capture_output=True, text=True, timeout=600,
     )
 
@@ -68,3 +69,40 @@ def test_resume_rewrites_log_header(tmp_path):
     assert _train(tmp_path, "--max_iters", "4", "--resume").returncode == 0
     headers = [l for l in (tmp_path / "train.log").read_text().splitlines() if l.startswith("#")]
     assert headers[-1].startswith("# max_iters=4")
+
+
+def test_seed_makes_training_reproducible(tmp_path):
+    text = "le chat dort sur le canapé pendant que la pluie tombe " * 120
+    weights = {}
+    for name, seed in (("a", "7"), ("b", "7"), ("c", "8")):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "input.txt").write_text(text, encoding="utf-8")
+        r = _train(d, "--max_iters", "2", "--seed", seed)
+        assert r.returncode == 0, r.stdout + r.stderr
+        weights[name] = torch.load(str(d / "out-nanopopixa" / "checkpoint.pt"), map_location="cpu",
+                                   weights_only=False)["model"]
+    same = lambda x, y: all(torch.equal(weights[x][k], weights[y][k]) for k in weights[x])
+    assert same("a", "b")                       # même graine → mêmes poids, bit à bit
+    assert not same("a", "c")
+
+
+def test_resume_without_size_keeps_checkpoint_size(tmp_path):
+    """--resume sans --size : taille et réglages du run initial, pas le défaut small."""
+    (tmp_path / "input.txt").write_text("abcdefgh " * 900, encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2").returncode == 0                  # nano
+    ckpt = torch.load(str(tmp_path / "out-nanopopixa" / "checkpoint.pt"), weights_only=False)
+    assert ckpt["train"]["size"] == "nano" and ckpt["train"]["max_iters"] == 2
+    # Sans --max_iters : le run initial (2 itérations) est déjà terminé, pas 5 000 du preset
+    for size in (None, "nano"):                     # sans --size, ou avec la taille enregistrée
+        r = _train(tmp_path, "--resume", size=size)
+        assert r.returncode == 0 and "déjà terminé (2/2" in r.stdout, r.stdout + r.stderr
+    r = _train(tmp_path, "--max_iters", "3", "--resume", size=None)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "[nano]" in r.stdout and "≠" not in r.stdout
+
+
+def test_seed_out_of_numpy_range_is_accepted(tmp_path):
+    (tmp_path / "input.txt").write_text("abcdefgh " * 900, encoding="utf-8")
+    r = _train(tmp_path, "--max_iters", "1", "--seed", str(2 ** 33))
+    assert r.returncode == 0, r.stdout + r.stderr

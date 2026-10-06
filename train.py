@@ -11,6 +11,7 @@ import sys
 import math
 import time
 import pickle
+import random
 import argparse
 
 import numpy as np
@@ -22,7 +23,7 @@ try:
 except ImportError:
     _HAS_TIKTOKEN = False
 
-from model import nanoPOPIXA, POPIXAConfig, checkpoint_v1_error
+from model import nanoPOPIXA, POPIXAConfig, SIZE_PRESETS, checkpoint_v1_error
 
 
 # ─────────────────────────────────────────
@@ -33,14 +34,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--data_dir",  default=None,        help="Dossier data/ créé par data_prep.py")
 parser.add_argument("--input",     default="input.txt", help="Fichier texte brut (si pas de --data_dir)")
 parser.add_argument("--resume",    action="store_true", help="Reprendre depuis le dernier checkpoint")
-parser.add_argument("--size",      default="medium",    choices=["nano","small","medium"],
-                    help="Taille du modèle (params hors embeddings) : nano (~0.9M), small (~10M), medium (~85M)")
+parser.add_argument("--size",      default=None,        choices=["nano","small","medium"],
+                    help="Taille du modèle (params hors embeddings) : nano (~0.9M), small (~10M, défaut), "
+                         "medium (~85M) — en reprise, celle du checkpoint par défaut")
 parser.add_argument("--longrope",  action="store_true",
                     help="LongRoPE : rope_base=500_000 — rotations plus lentes, meilleure base pour "
                          "étendre le contexte plus tard (la fenêtre reste block_size)")
 parser.add_argument("--max_iters",  type=int, default=None, help="Surcharge du nb d'itérations du preset")
 parser.add_argument("--batch_size", type=int, default=None, help="Surcharge de la taille de batch du preset")
+parser.add_argument("--seed",       type=int, default=1337,
+                    help="Graine : initialisation, dropout et tirage des batchs reproductibles")
 args = parser.parse_args()
+
+# ── Reproductibilité ──────────────────────────────────────────────────────────
+random.seed(args.seed)
+np.random.seed(args.seed % 2**32)        # numpy n'accepte que [0, 2**32)
+torch.manual_seed(args.seed)
 
 
 # ─────────────────────────────────────────
@@ -49,18 +58,67 @@ args = parser.parse_args()
 
 out_dir = "out-nanopopixa"
 
+ckpt_path   = os.path.join(out_dir, "checkpoint.pt")
+resume_ckpt = None
+if args.resume:
+    if os.path.exists(ckpt_path):
+        resume_ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        v1_error = checkpoint_v1_error(resume_ckpt.get("model", {}))
+        if v1_error:
+            print(f"❌ {v1_error}")
+            sys.exit(1)
+    else:
+        print("⚠️  Aucun checkpoint trouvé — démarrage depuis 0")
+
+
+def _size_of(n_layer_: int, n_head_: int, n_embd_: int):
+    """Nom du preset correspondant à une architecture (None si aucun)."""
+    for name, a in SIZE_PRESETS.items():
+        if (a["n_layer"], a["n_head"], a["n_embd"]) == (n_layer_, n_head_, n_embd_):
+            return name
+    return None
+
+
+# Réglages d'entraînement enregistrés par le dernier lancement (checkpoints ≥ 2.2)
+_saved = (resume_ckpt.get("train") or {}) if resume_ckpt is not None else {}
+if _saved.get("size") not in SIZE_PRESETS:
+    _saved = {}
+
+# Taille effective : --size, sinon celle enregistrée, sinon celle de l'architecture du checkpoint
+# (un run medium lancé avec l'ancien défaut garde ses hyperparamètres medium), sinon small
+size = args.size
+if size is None:
+    if resume_ckpt is not None:
+        _ck = resume_ckpt["config"]
+        size = _saved.get("size") or _size_of(_ck.n_layer, _ck.n_head, _ck.n_embd) or "small"
+    else:
+        size = "small"
+
 # ── Presets de taille ─────────────────────────────────────────────────────────
-_SIZES = {
-    #          block  layer head  embd  batch  max_iters  lr      warmup
-    "nano":   (512,   4,    4,    128,  32,    5_000,     3e-4,   100),   # RoPE → block_size 256→512
-    "small":  (1024,  6,    6,    384,  16,    10_000,    3e-4,   200),   # RoPE → block_size 512→1024
-    "medium": (1024,  12,   12,   768,  8,     10_000,    5e-4,   200),
+# Architecture : model.SIZE_PRESETS (partagée avec popixa bench) ; ici l'entraînement
+_TRAIN_PRESETS = {
+    #          batch  max_iters  lr      warmup
+    "nano":   (32,    5_000,     3e-4,   100),
+    "small":  (16,    10_000,    3e-4,   200),
+    "medium": (8,     10_000,    5e-4,   200),
 }
-(block_size, n_layer, n_head, n_embd,
- batch_size, max_iters, learning_rate, warmup_iters) = _SIZES[args.size]
+_arch = SIZE_PRESETS[size]
+block_size, n_layer, n_head, n_embd = (_arch["block_size"], _arch["n_layer"],
+                                       _arch["n_head"], _arch["n_embd"])
+batch_size, max_iters, learning_rate, warmup_iters = _TRAIN_PRESETS[size]
+# Reprise sans --size (ou avec la taille enregistrée) : réglages du dernier lancement, ses
+# --max_iters / --batch_size compris, plutôt que ceux du preset. Un --size différent applique
+# le preset de cette taille ; checkpoints antérieurs à 2.2 : preset de leur taille
+if _saved.get("size") != size:
+    _saved = {}
+if _saved:
+    batch_size    = _saved.get("batch_size", batch_size)
+    max_iters     = _saved.get("max_iters", max_iters)
+    learning_rate = _saved.get("learning_rate", learning_rate)
+    warmup_iters  = _saved.get("warmup_iters", warmup_iters)
 if args.max_iters is not None:
     max_iters    = max(1, args.max_iters)
-    warmup_iters = min(warmup_iters, max(1, max_iters // 10))
+    warmup_iters = min(_TRAIN_PRESETS[size][3], max(1, max_iters // 10))
 if args.batch_size is not None:
     batch_size = max(1, args.batch_size)
 
@@ -86,46 +144,43 @@ else:
 
 print(f"🚀 Device détecté : {device.upper()}")
 
-# Guard OOM — medium sur MPS dépasse facilement les 20 GB
-# (85M params × batch 8 × block 1024 × bfloat16 ≈ 20+ GB activations)
-if device == "mps" and args.size == "medium" and "PYTORCH_MPS_HIGH_WATERMARK_RATIO" not in os.environ:
-    print("⚠️  Attention : --size medium peut provoquer un OOM sur Apple Silicon (>20 GB MPS).")
-    print("   Recommandation : utilise --size small (~10M params, ~3 GB) ou --size nano (~0.9M params).")
-    print("   Tu peux aussi réduire le batch en éditant batch_size dans train.py.")
-    print("   Pour forcer quand même : relance avec PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 popixa train ...")
-    import sys as _sys
-    _sys.exit(1)
-
-
 rope_base = 500_000 if args.longrope else 10_000
 
 # ── Reprise : l'architecture vient du checkpoint, pas de --size ───────────────
 # (sinon load_state_dict plante si --size diffère, ou les tables RoPE du checkpoint
 #  écrasent silencieusement un --longrope différent)
-ckpt_path   = os.path.join(out_dir, "checkpoint.pt")
-resume_ckpt = None
-if args.resume:
-    if os.path.exists(ckpt_path):
-        resume_ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        v1_error = checkpoint_v1_error(resume_ckpt.get("model", {}))
-        if v1_error:
-            print(f"❌ {v1_error}")
-            sys.exit(1)
-        ck = resume_ckpt["config"]
-        ck_rope = getattr(ck, "rope_base", 10_000)
-        if (ck.block_size, ck.n_layer, ck.n_head, ck.n_embd) != (block_size, n_layer, n_head, n_embd):
-            print(f"⚠️  Architecture du checkpoint (block {ck.block_size}, {ck.n_layer} couches, "
-                  f"{ck.n_head} têtes, embd {ck.n_embd}) ≠ --size {args.size} → on garde le checkpoint")
-        if ck_rope != rope_base:
-            print(f"⚠️  rope_base du checkpoint ({ck_rope}) ≠ demandé ({rope_base}) → on garde le checkpoint")
-        block_size, n_layer, n_head, n_embd = ck.block_size, ck.n_layer, ck.n_head, ck.n_embd
-        rope_base = ck_rope
-        # Même source de données que l'entraînement initial si --data_dir est omis
-        if args.data_dir is None and resume_ckpt.get("data_dir"):
-            args.data_dir = resume_ckpt["data_dir"]
-            print(f"📂 Données du checkpoint : {args.data_dir}")
+if resume_ckpt is not None:
+    ck = resume_ckpt["config"]
+    ck_rope = getattr(ck, "rope_base", 10_000)
+    if (ck.block_size, ck.n_layer, ck.n_head, ck.n_embd) != (block_size, n_layer, n_head, n_embd):
+        demande = (f"--size {size}" if args.size else
+                   f"réglages enregistrés ({size})" if _saved else f"aucun preset (défaut {size})")
+        print(f"⚠️  Architecture du checkpoint (block {ck.block_size}, {ck.n_layer} couches, "
+              f"{ck.n_head} têtes, embd {ck.n_embd}) ≠ {demande} → on garde le checkpoint "
+              f"(hyperparamètres d'entraînement de {size})")
+    if ck_rope != rope_base:
+        print(f"⚠️  rope_base du checkpoint ({ck_rope}) ≠ demandé ({rope_base}) → on garde le checkpoint")
+    block_size, n_layer, n_head, n_embd = ck.block_size, ck.n_layer, ck.n_head, ck.n_embd
+    rope_base = ck_rope
+    # Même source de données que l'entraînement initial si --data_dir est omis
+    if args.data_dir is None and resume_ckpt.get("data_dir"):
+        args.data_dir = resume_ckpt["data_dir"]
+        print(f"📂 Données du checkpoint : {args.data_dir}")
+
+# Guard OOM — medium sur MPS dépasse facilement les 20 GB
+# (85M params × batch 8 × block 1024 × bfloat16 ≈ 20+ GB activations).
+# Testée sur l'architecture EFFECTIVE (un checkpoint medium repris compte aussi)
+if (device == "mps" and _size_of(n_layer, n_head, n_embd) == "medium"
+        and "PYTORCH_MPS_HIGH_WATERMARK_RATIO" not in os.environ):
+    print("⚠️  Attention : un modèle medium peut provoquer un OOM sur Apple Silicon (>20 GB MPS).")
+    if resume_ckpt is not None:
+        print("   Le checkpoint repris est medium : --size ne change pas son architecture. Recommandation :")
+        print("   nouvel entraînement (sans --resume) avec --size small (~3 GB) ou --size nano.")
     else:
-        print("⚠️  Aucun checkpoint trouvé — démarrage depuis 0")
+        print("   Recommandation : utilise --size small (~10M params, ~3 GB) ou --size nano (~0.9M params).")
+    print("   Pour forcer quand même (de préférence avec un batch réduit, la garde ne regarde pas le batch) :")
+    print("   PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 popixa train ... --batch_size 2")
+    sys.exit(1)
 
 
 # ─────────────────────────────────────────
@@ -221,9 +276,14 @@ for _name, _d in (("train", train_data), ("val", val_data)):
         sys.exit(1)
 
 
+# Générateur dédié au tirage des batchs : indépendant des autres usages de l'aléatoire
+# (dropout, init) → mêmes batchs pour une même graine. Reprise : graine + iter de départ.
+_batch_gen = torch.Generator().manual_seed(args.seed)
+
+
 def get_batch(split):
     d  = train_data if split == "train" else val_data
-    ix = torch.randint(len(d) - block_size, (batch_size,))
+    ix = torch.randint(len(d) - block_size, (batch_size,), generator=_batch_gen)
     x  = torch.stack([d[i     : i + block_size    ] for i in ix])
     y  = torch.stack([d[i + 1 : i + block_size + 1] for i in ix])
     return x.to(device), y.to(device)
@@ -279,6 +339,7 @@ if resume_ckpt is not None:
     if "optimizer" in resume_ckpt:
         optimizer.load_state_dict(resume_ckpt["optimizer"])
     iter_start = resume_ckpt.get("iter", 0)
+    _batch_gen.manual_seed(args.seed + iter_start)
     if iter_start >= max_iters:
         print(f"✅ Entraînement déjà terminé ({iter_start}/{max_iters} itérations) — rien à faire")
     else:
@@ -301,6 +362,9 @@ def save_checkpoint(it: int) -> None:
         "iter":      it,
         "tokenizer": meta.get("tokenizer", "char"),
         "data_dir":  args.data_dir,
+        # Réglages d'entraînement : --resume sans options les reprend tels quels
+        "train":     {"size": size, "batch_size": batch_size, "max_iters": max_iters,
+                      "learning_rate": learning_rate, "warmup_iters": warmup_iters},
     }
     if meta.get("tokenizer") != "tiktoken_gpt2":
         checkpoint["vocab"] = {"stoi": stoi, "itos": itos}
@@ -314,7 +378,7 @@ def save_checkpoint(it: int) -> None:
 # Boucle d'entraînement
 # ─────────────────────────────────────────
 
-print(f"\n🚀 Démarrage entraînement nanoPOPIXA [{args.size}]...\n")
+print(f"\n🚀 Démarrage entraînement nanoPOPIXA [{size}]...\n")
 t0     = time.time()
 t_last = t0
 

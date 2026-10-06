@@ -1,0 +1,22 @@
+# Amorces d'évaluation (popixa eval --tasks samples) — une par ligne, les lignes « # » sont ignorées.
+# Mélange de registres : narratif classique (corpus Hugo / Molière), dialogue, description, moderne.
+Il était une fois
+Le soir tombait sur la ville quand
+Je ne sais pas pourquoi, mais
+Madame, je vous en prie,
+La vieille maison au bord de la rivière
+Mon père m'a toujours dit que
+Dans le jardin, les enfants
+Ce matin-là, il pleuvait sur Paris et
+Monsieur, votre fils est
+La lettre était posée sur la table ;
+Quand le roi entra dans la salle,
+Elle ouvrit la fenêtre et regarda
+Les ouvriers sortaient de l'usine
+Il faut que tu saches que
+Au fond de la forêt, il y avait
+Le médecin examina le malade et dit :
+Nous étions jeunes alors, et
+La mer était calme ce jour-là,
+Pourquoi m'avez-vous menti ?
+Demain, nous partirons pour

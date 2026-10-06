@@ -33,6 +33,15 @@ class POPIXAConfig:
     rope_base:  int = 10_000     # base fréquentielle RoPE (10k standard, 500k LongRoPE)
 
 
+# Presets d'architecture partagés par train.py et popixa bench
+# (params hors embeddings : nano ~0.9M, small ~10M, medium ~85M)
+SIZE_PRESETS = {
+    "nano":   dict(block_size=512,  n_layer=4,  n_head=4,  n_embd=128),
+    "small":  dict(block_size=1024, n_layer=6,  n_head=6,  n_embd=384),
+    "medium": dict(block_size=1024, n_layer=12, n_head=12, n_embd=768),
+}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RMSNorm — Root Mean Square Normalization
 # ─────────────────────────────────────────────────────────────────────────────

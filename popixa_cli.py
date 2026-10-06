@@ -3,10 +3,17 @@ nanoPOPIXA — Point d'entrée CLI principal
 Accessible via la commande `popixa` après `pip install -e .`
 """
 
+import os
 import re
 import sys
 import shlex
 import argparse
+
+# Installation éditable antérieure + git pull : les modules ajoutés depuis l'installation
+# (ex. popixa_eval en 2.2) restent importables depuis le dossier du dépôt
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.append(_HERE)
 
 # ─── Couleurs ─────────────────────────────────────────────────────────────────
 R    = "\033[0m"
@@ -18,6 +25,22 @@ SEP_C    = fg(120, 120, 180)   # gris-bleu — "›"
 INFO_C   = fg(160, 160, 200)   # gris clair
 CMD_C    = fg(255, 180,   0)   # jaune
 ERR_C    = fg(255,  80,  80)   # rouge
+
+
+def popixa_version() -> str:
+    """Version du code exécuté : pyproject.toml du dépôt, sinon paquet installé, sinon « dev »."""
+    try:
+        with open(os.path.join(_HERE, "pyproject.toml"), encoding="utf-8") as f:
+            m = re.search(r'^version\s*=\s*"([^"]+)"', f.read(), re.MULTILINE)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    try:
+        from importlib.metadata import version
+        return version("nanopopixa")
+    except Exception:
+        return "dev"
 
 
 HELP = """
@@ -42,6 +65,12 @@ HELP = """
           [--json] [--schema FICHIER|JSON]
       → Générer du texte (mode non-interactif) — --json/--schema : sortie JSON garantie
 
+  eval    [--checkpoint PATH] [--data_dir DIR] [--tasks bpb,paires,samples] [--out eval.json]
+      → Mesurer la qualité : bits/octet, paires minimales FR, échantillons (déterministe)
+
+  bench   [--size nano|small|medium] [--seconds 15]
+      → Débit réel de ta machine : tokens/s entraînement et génération, mémoire, TFLOPS
+
   scrape  --url URL [--max_pages N] [--output fichier.txt]
       → Crawler web → corpus d'entraînement
 
@@ -49,7 +78,7 @@ HELP = """
       → Assembler du code source local en corpus
 
   update  → mettre à jour depuis GitHub (git pull + pip install)
-  help  →  cette aide      exit  →  quitter
+  help  →  cette aide      exit  →  quitter      version  →  version installée
 
 Exemples :
   prep --dataset shakespeare
@@ -57,6 +86,8 @@ Exemples :
   train --data_dir data/ --resume
   chat
   gen --prompt '{"nom": ' --schema schema.json
+  eval --data_dir data/ --out eval.json
+  bench --size small
   scrape --url https://fr.wikipedia.org/wiki/Python --max_pages 20
 """
 
@@ -67,6 +98,14 @@ def _positive_float(value: str) -> float:
     if f <= 0:
         raise argparse.ArgumentTypeError(f"doit être > 0 (reçu {value})")
     return f
+
+
+def _positive_int(value: str) -> int:
+    """Type argparse : entier strictement positif."""
+    i = int(value)
+    if i <= 0:
+        raise argparse.ArgumentTypeError(f"doit être > 0 (reçu {value})")
+    return i
 
 
 def cmd_update(args):
@@ -147,7 +186,7 @@ def cmd_chat(args):
 def cmd_train(args):
     import sys as _sys
     import runpy, os
-    _sys.argv = ["train.py", "--size", args.size]
+    _sys.argv = ["train.py"] + (["--size", args.size] if args.size else [])
     if args.data_dir:
         _sys.argv += ["--data_dir", args.data_dir]
     if args.input:
@@ -160,6 +199,8 @@ def cmd_train(args):
         _sys.argv += ["--max_iters", str(args.max_iters)]
     if args.batch_size is not None:
         _sys.argv += ["--batch_size", str(args.batch_size)]
+    if args.seed is not None:
+        _sys.argv += ["--seed", str(args.seed)]
     train_path = os.path.join(os.path.dirname(__file__), "train.py")
     runpy.run_path(train_path, run_name="__main__")
 
@@ -254,6 +295,95 @@ def cmd_gen(args):
     print(decode(tokens))
 
 
+def cmd_eval(args):
+    import json
+    from popixa_eval import run_eval
+    tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
+    if "bpb" in tasks and not args.data_dir:
+        tasks.remove("bpb")
+        print(INFO_C + "  (bpb ignorée : pas de --data_dir)" + R, file=sys.stderr)
+    if not tasks:
+        print(ERR_C + "  ✗ aucune tâche à évaluer (bpb demande --data_dir)" + R, file=sys.stderr)
+        sys.exit(1)
+    # Dossiers de sortie vérifiés AVANT l'évaluation (sinon les résultats sont perdus à la fin)
+    samples_out = args.samples_out if "samples" in tasks else None
+    for opt, path in (("--out", args.out), ("--samples_out", samples_out)):
+        if not path:
+            continue
+        d = os.path.dirname(os.path.abspath(path))
+        is_dir = os.path.isdir(path) or not os.path.basename(path)       # « resultats/ » aussi
+        if is_dir or not os.path.isdir(d):
+            why = "désigne un dossier" if is_dir else f"dossier {d} introuvable"
+            print(ERR_C + f"  ✗ {opt} {path} : {why}" + R, file=sys.stderr)
+            sys.exit(1)
+    if args.out and samples_out and os.path.realpath(args.out) == os.path.realpath(samples_out):
+        print(ERR_C + f"  ✗ --out et --samples_out désignent le même fichier ({args.out})" + R, file=sys.stderr)
+        sys.exit(1)
+    print(INFO_C + f"  Évaluation de {args.checkpoint}…" + R, file=sys.stderr)
+    try:
+        results, md = run_eval(
+            args.checkpoint, data_dir=args.data_dir, split=args.split, tasks=tasks,
+            max_bytes=args.max_bytes,
+            **({"pairs_path": args.pairs} if args.pairs else {}),
+            **({"prompts_path": args.prompts} if args.prompts else {}),
+            samples_tokens=args.samples_tokens, seed=args.seed,
+            log=lambda m: print(CMD_C + m + R, file=sys.stderr),
+        )
+    except (ValueError, OSError) as e:
+        print(ERR_C + f"  ✗ {e}" + R, file=sys.stderr)
+        sys.exit(1)
+    text = json.dumps(results, ensure_ascii=False, indent=2, sort_keys=True)
+    ok = True
+
+    def write(path, content, fallback, stream):
+        """Écrit un fichier de sortie ; en cas d'échec, le contenu part sur `stream` (jamais perdu)."""
+        nonlocal ok
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            print(INFO_C + f"  → {path}" + R, file=sys.stderr)
+        except OSError as e:
+            ok = False
+            where = "la sortie standard" if stream is sys.stdout else "la sortie d'erreur"
+            print(ERR_C + f"  ✗ écriture de {path} impossible ({e}) : {fallback} sur {where}" + R,
+                  file=sys.stderr)
+            print(content, file=stream)
+
+    # stdout ne porte que le JSON des résultats ; le markdown de secours va sur stderr
+    if args.out:
+        write(args.out, text + "\n", "résultats JSON", sys.stdout)
+    else:
+        print(text)
+    if md is not None and args.samples_out:
+        write(args.samples_out, md, "échantillons", sys.stderr)
+    if not ok:
+        sys.exit(1)
+
+
+def cmd_bench(args):
+    import json
+    from popixa_eval import run_bench
+    if not 0.0 <= args.dropout < 1.0:
+        print(ERR_C + f"  ✗ --dropout doit être dans [0, 1) (reçu {args.dropout})" + R, file=sys.stderr)
+        sys.exit(1)
+    print(INFO_C + f"  Benchmark preset {args.size} (entraînement ≈ {args.seconds / 2:.0f} s — au moins "
+          f"2 pas, plus long sur CPU pour small/medium —, puis génération)…" + R, file=sys.stderr)
+    r = run_bench(size=args.size, vocab_size=args.vocab, batch_size=args.batch,
+                  seconds=args.seconds, dropout=args.dropout)
+    if args.json:
+        print(json.dumps(r, indent=2, sort_keys=True))
+        return
+    print(CMD_C + f"  {r['size']} · {r['params'] / 1e6:.1f}M params · vocab {r['vocab_size']} · "
+          f"{r['device']} · torch {r['torch']}" + R)
+    print(f"  Entraînement : {r['train_tok_s']:,.0f} tokens/s  (batch {r['batch_size']} × "
+          f"{r['block_size']}, dropout {r['dropout']}, {r['train_steps']} pas) · "
+          f"{r['train_tflops']:.3f} TFLOPS effectifs")
+    print(f"  Génération   : {r['gen_tok_s']:,.0f} tokens/s (greedy, KV-cache)")
+    print(f"  Mémoire      : {r['peak_memory_mb']:,.0f} Mo ({r['memory_kind']})")
+    hours = 1e9 / max(r["train_tok_s"], 1e-9) / 3600
+    print(INFO_C + f"  ≈ {hours:,.1f} h pour 1 milliard de tokens d'entraînement à ce débit" + R)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Construit et retourne le parser argparse principal (réutilisable)."""
     parser = argparse.ArgumentParser(prog="popixa", add_help=False)
@@ -274,12 +404,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_train = sub.add_parser("train")
     p_train.add_argument("--data_dir", default=None)
     p_train.add_argument("--input",    default="input.txt")
-    p_train.add_argument("--size",     default="medium",
+    p_train.add_argument("--size",     default=None,       # small, ou la taille du checkpoint repris
                          choices=["nano", "small", "medium"])
     p_train.add_argument("--resume",   action="store_true")
     p_train.add_argument("--longrope", action="store_true")
     p_train.add_argument("--max_iters",  type=int, default=None)
     p_train.add_argument("--batch_size", type=int, default=None)
+    p_train.add_argument("--seed",       type=int, default=None)
 
     # ── prep ──────────────────────────────────────────────────────────
     p_prep = sub.add_parser("prep")
@@ -323,6 +454,35 @@ def _build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--schema",     default=None,
                        help="Schéma JSON (fichier .json ou JSON inline) — implique --json")
 
+    # ── eval ──────────────────────────────────────────────────────────
+    p_eval = sub.add_parser("eval")
+    p_eval.add_argument("--checkpoint", "--ckpt", default="out-nanopopixa/checkpoint.pt")
+    p_eval.add_argument("--data_dir",   default=None,
+                        help="Dossier avec val.bin + meta.pkl (requis pour la tâche bpb)")
+    p_eval.add_argument("--split",      default="val", choices=["val", "train"])
+    p_eval.add_argument("--tasks",      default="bpb,paires,samples",
+                        help="Liste parmi bpb,paires,samples (bpb ignorée sans --data_dir)")
+    p_eval.add_argument("--max_bytes",  type=_positive_int, default=None,
+                        help="bpb sur les N premiers octets de texte seulement (même extrait, à un token "
+                             "près, quel que soit le tokenizer : bpb comparables)")
+    p_eval.add_argument("--out",        default=None, help="Fichier JSON (sinon stdout)")
+    p_eval.add_argument("--samples_out", default="samples.md")
+    p_eval.add_argument("--samples_tokens", type=_positive_int, default=128,
+                        help="tokens par échantillon (≥ 120 pour mesurer les rendements décroissants)")
+    p_eval.add_argument("--seed",       type=int, default=1337)
+    p_eval.add_argument("--pairs",      default=None, help="Fichier de paires (JSONL)")
+    p_eval.add_argument("--prompts",    default=None, help="Fichier d'amorces")
+
+    # ── bench ─────────────────────────────────────────────────────────
+    p_bench = sub.add_parser("bench")
+    p_bench.add_argument("--size",    default="small", choices=["nano", "small", "medium"])
+    p_bench.add_argument("--vocab",   type=_positive_int, default=50257)
+    p_bench.add_argument("--batch",   type=_positive_int, default=4)
+    p_bench.add_argument("--seconds", type=_positive_float, default=15.0)
+    p_bench.add_argument("--dropout", type=float, default=0.1,
+                         help="dropout pendant la mesure (0.1 = train.py ; 0 = sans dropout)")
+    p_bench.add_argument("--json",    action="store_true")
+
     return parser
 
 
@@ -334,6 +494,8 @@ _DISPATCH = {
     "monitor": cmd_monitor,
     "scrape":  cmd_scrape,
     "gen":     cmd_gen,
+    "eval":    cmd_eval,
+    "bench":   cmd_bench,
     "update":  cmd_update,
 }
 
@@ -363,7 +525,7 @@ def run_shell() -> None:
     print(HELP)
     print(INFO_C
           + "  Commandes : " + CMD_C
-          + "chat  train  prep  monitor  gen  scrape  collect  help  exit" + R)
+          + "chat  train  prep  eval  bench  monitor  gen  scrape  collect  version  help  exit" + R)
 
     prompt = (PROMPT_C + B + "popixa" + R + " " + SEP_C + "›" + R + " ")
 
@@ -400,6 +562,10 @@ def run_shell() -> None:
             print(HELP)
             continue
 
+        if cmd in ("version", "--version", "-V"):
+            print(f"nanoPOPIXA {popixa_version()}")
+            continue
+
         if cmd not in _DISPATCH:
             print(ERR_C + f"  ✗ '{cmd}' n'est pas une commande." + R + "  "
                   + INFO_C + "→ tape " + CMD_C + "chat" + INFO_C
@@ -432,6 +598,9 @@ def main():
         print(HELP)
         return
     if argv[0] in ("exit", "quit", "q"):
+        return
+    if argv[0] in ("--version", "-V", "version"):
+        print(f"nanoPOPIXA {popixa_version()}")
         return
 
     if argv[0] == "chat":
