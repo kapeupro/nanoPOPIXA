@@ -14,6 +14,7 @@ out-nanopopixa/
 train.log
 *.txt
 !README.md
+!evals/*.txt
 
 # macOS
 .DS_Store

@@ -39,6 +39,10 @@ jobs:
           python -c "from session_cache import save_session, load_session, clear_session; print('session_cache OK')"
           python -c "from popixa_cli import _build_parser; _build_parser(); print('CLI OK')"
           python -c "from structured import json_constraint, load_schema; print('structured OK')"
+          python -c "from popixa_eval import run_eval, run_bench; print('popixa_eval OK')"
+
+      - name: Paires minimales à jour (evals/build_paires.py --check)
+        run: python evals/build_paires.py --check
 
       - name: Tests unitaires (pytest)
         run: python -m pytest -q tests

@@ -68,3 +68,19 @@ def test_resume_rewrites_log_header(tmp_path):
     assert _train(tmp_path, "--max_iters", "4", "--resume").returncode == 0
     headers = [l for l in (tmp_path / "train.log").read_text().splitlines() if l.startswith("#")]
     assert headers[-1].startswith("# max_iters=4")
+
+
+def test_seed_makes_training_reproducible(tmp_path):
+    text = "le chat dort sur le canapé pendant que la pluie tombe " * 120
+    weights = {}
+    for name, seed in (("a", "7"), ("b", "7"), ("c", "8")):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "input.txt").write_text(text, encoding="utf-8")
+        r = _train(d, "--max_iters", "2", "--seed", seed)
+        assert r.returncode == 0, r.stdout + r.stderr
+        weights[name] = torch.load(str(d / "out-nanopopixa" / "checkpoint.pt"), map_location="cpu",
+                                   weights_only=False)["model"]
+    same = lambda x, y: all(torch.equal(weights[x][k], weights[y][k]) for k in weights[x])
+    assert same("a", "b")                       # même graine → mêmes poids, bit à bit
+    assert not same("a", "c")

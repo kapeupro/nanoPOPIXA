@@ -100,9 +100,15 @@ popixa train --size nano --data_dir data/
 popixa chat
 ```
 
-Le modèle `nano` suffit pour tester toutes les fonctionnalités. Pour une meilleure qualité de génération, utilise `--size small` (~10M params, ~3× plus long à entraîner).
+Le modèle `nano` suffit pour tester toutes les fonctionnalités. Sans `--size`, `popixa train`
+entraîne un `small` (~10M params, ~3× plus long) : meilleure qualité de génération.
 
 > **Apple Silicon (M1/M2/M3/M4)** : `--size medium` dépasse les 20 GB de mémoire MPS et plantera. Reste sur `nano` ou `small`.
+
+```bash
+# 4. Mesurer le modèle (bits par octet, paires minimales françaises, échantillons)
+popixa eval --data_dir data/ --out eval.json
+```
 
 ---
 
@@ -114,6 +120,9 @@ popixa chat                → chat avec le modèle entraîné
 popixa train               → lancer l'entraînement
 popixa prep                → télécharger et préparer un dataset
 popixa gen                 → générer du texte (non-interactif)
+popixa eval                → évaluer un checkpoint (bpb, paires FR, échantillons) → eval.json
+popixa bench               → débit d'entraînement / génération de TA machine
+popixa --version           → version installée
 popixa monitor             → dashboard live de la loss
 popixa scrape              → crawler web → corpus
 popixa collect SOURCE_DIR  → assembler du code source en corpus
@@ -123,6 +132,8 @@ popixa collect SOURCE_DIR  → assembler du code source en corpus
 
 ```bash
 popixa train --size nano --data_dir data/       # modèle léger, rapide
+popixa train --data_dir data/                   # small (défaut)
+popixa train --data_dir data/ --seed 42         # graine : init, dropout et batchs reproductibles
 popixa train --data_dir data/ --resume          # reprendre depuis checkpoint
 popixa train --size nano --data_dir data/ --longrope   # rope_base=500k (la fenêtre reste block_size)
 ```
@@ -148,6 +159,29 @@ popixa gen --schema '{"type":"object","properties":{"nom":{"type":"string"}},"re
 ```
 
 `stdout` ne contient que le texte généré (`popixa gen --json > sortie.json`).
+
+### Mesurer : `popixa eval` et `popixa bench`
+
+```bash
+popixa eval --data_dir data/ --out eval.json    # les 3 tâches, échantillons dans samples.md
+popixa eval --tasks paires                      # sans données : paires minimales seules
+popixa eval --data_dir data/ --max_tokens 200000   # bpb sur un extrait (plus rapide)
+popixa bench                                    # preset small, ~15 s
+popixa bench --size medium --json               # sortie JSON
+```
+
+| Tâche | Ce qu'elle mesure |
+|---|---|
+| `bpb` | **Bits par octet** sur `val.bin` (fenêtres de `block_size` sans chevauchement). Divisé par les octets UTF-8 du texte, pas par les tokens : comparable entre tokenizer caractère et BPE. Plus bas = mieux. |
+| `paires` | **Paires minimales françaises** (`evals/fr_paires.jsonl`) : % de paires où la phrase correcte est plus probable que la fautive — accord sujet-verbe, accord nominal, participe passé, élision, prépositions. À comparer à `baseline_longueur` (score obtenu en préférant toujours la phrase la plus courte). |
+| `samples` | 20 amorces (`evals/prompts_fr.txt`) à graine fixe → `samples.md`, avec distinct-2 et taux de sorties répétitives. |
+
+`eval.json` ne contient ni date ni durée : deux évaluations du même checkpoint donnent le même
+fichier, on peut le versionner et le comparer. Chiffres de référence : [`evals/BASELINES.md`](evals/BASELINES.md).
+
+`popixa bench` mesure tokens/s en entraînement (forward + backward + AdamW) et en génération
+(normale et speculative), la mémoire pic et les TFLOPS effectifs, puis estime le temps pour
+1 milliard de tokens d'entraînement sur ta machine.
 
 ### Commandes in-chat
 
@@ -227,6 +261,7 @@ popixa gen --schema '{"type":"object","properties":{"nom":{"type":"string"}},"re
 - **Gradient clipping** (1.0)
 - **Gradient accumulation** — simuler de grands batches
 - **Checkpoint resume** — reprendre un entraînement interrompu
+- **Graine fixe** (`--seed`, défaut 1337) — deux entraînements identiques donnent les mêmes poids
 - **Streaming token par token** en chat
 
 ### Gestion du contexte
@@ -266,7 +301,9 @@ nanopopixa/
 ├── scrape.py      # Crawler web → corpus texte
 ├── splash.py      # Globe 3D + logo animé
 ├── popixa_cli.py  # Point d'entrée CLI unifié
-├── tests/         # Tests pytest (modèle, session, chat, structured outputs)
+├── popixa_eval.py # popixa eval (bpb, paires minimales, échantillons) + popixa bench
+├── evals/         # Paires minimales FR (générées par build_paires.py), amorces, baselines
+├── tests/         # Tests pytest (modèle, session, chat, structured outputs, eval)
 └── pyproject.toml # Package installable
 ```
 

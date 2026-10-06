@@ -11,6 +11,7 @@ import sys
 import math
 import time
 import pickle
+import random
 import argparse
 
 import numpy as np
@@ -22,7 +23,7 @@ try:
 except ImportError:
     _HAS_TIKTOKEN = False
 
-from model import nanoPOPIXA, POPIXAConfig, checkpoint_v1_error
+from model import nanoPOPIXA, POPIXAConfig, SIZE_PRESETS, checkpoint_v1_error
 
 
 # ─────────────────────────────────────────
@@ -33,14 +34,21 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--data_dir",  default=None,        help="Dossier data/ créé par data_prep.py")
 parser.add_argument("--input",     default="input.txt", help="Fichier texte brut (si pas de --data_dir)")
 parser.add_argument("--resume",    action="store_true", help="Reprendre depuis le dernier checkpoint")
-parser.add_argument("--size",      default="medium",    choices=["nano","small","medium"],
+parser.add_argument("--size",      default="small",     choices=["nano","small","medium"],
                     help="Taille du modèle (params hors embeddings) : nano (~0.9M), small (~10M), medium (~85M)")
 parser.add_argument("--longrope",  action="store_true",
                     help="LongRoPE : rope_base=500_000 — rotations plus lentes, meilleure base pour "
                          "étendre le contexte plus tard (la fenêtre reste block_size)")
 parser.add_argument("--max_iters",  type=int, default=None, help="Surcharge du nb d'itérations du preset")
 parser.add_argument("--batch_size", type=int, default=None, help="Surcharge de la taille de batch du preset")
+parser.add_argument("--seed",       type=int, default=1337,
+                    help="Graine : initialisation, dropout et tirage des batchs reproductibles")
 args = parser.parse_args()
+
+# ── Reproductibilité ──────────────────────────────────────────────────────────
+random.seed(args.seed)
+np.random.seed(args.seed)
+torch.manual_seed(args.seed)
 
 
 # ─────────────────────────────────────────
@@ -50,14 +58,17 @@ args = parser.parse_args()
 out_dir = "out-nanopopixa"
 
 # ── Presets de taille ─────────────────────────────────────────────────────────
-_SIZES = {
-    #          block  layer head  embd  batch  max_iters  lr      warmup
-    "nano":   (512,   4,    4,    128,  32,    5_000,     3e-4,   100),   # RoPE → block_size 256→512
-    "small":  (1024,  6,    6,    384,  16,    10_000,    3e-4,   200),   # RoPE → block_size 512→1024
-    "medium": (1024,  12,   12,   768,  8,     10_000,    5e-4,   200),
+# Architecture : model.SIZE_PRESETS (partagée avec popixa bench) ; ici l'entraînement
+_TRAIN_PRESETS = {
+    #          batch  max_iters  lr      warmup
+    "nano":   (32,    5_000,     3e-4,   100),
+    "small":  (16,    10_000,    3e-4,   200),
+    "medium": (8,     10_000,    5e-4,   200),
 }
-(block_size, n_layer, n_head, n_embd,
- batch_size, max_iters, learning_rate, warmup_iters) = _SIZES[args.size]
+_arch = SIZE_PRESETS[args.size]
+block_size, n_layer, n_head, n_embd = (_arch["block_size"], _arch["n_layer"],
+                                       _arch["n_head"], _arch["n_embd"])
+batch_size, max_iters, learning_rate, warmup_iters = _TRAIN_PRESETS[args.size]
 if args.max_iters is not None:
     max_iters    = max(1, args.max_iters)
     warmup_iters = min(warmup_iters, max(1, max_iters // 10))
@@ -221,9 +232,14 @@ for _name, _d in (("train", train_data), ("val", val_data)):
         sys.exit(1)
 
 
+# Générateur dédié au tirage des batchs : indépendant des autres usages de l'aléatoire
+# (dropout, init) → mêmes batchs pour une même graine. Reprise : graine + iter de départ.
+_batch_gen = torch.Generator().manual_seed(args.seed)
+
+
 def get_batch(split):
     d  = train_data if split == "train" else val_data
-    ix = torch.randint(len(d) - block_size, (batch_size,))
+    ix = torch.randint(len(d) - block_size, (batch_size,), generator=_batch_gen)
     x  = torch.stack([d[i     : i + block_size    ] for i in ix])
     y  = torch.stack([d[i + 1 : i + block_size + 1] for i in ix])
     return x.to(device), y.to(device)
@@ -279,6 +295,7 @@ if resume_ckpt is not None:
     if "optimizer" in resume_ckpt:
         optimizer.load_state_dict(resume_ckpt["optimizer"])
     iter_start = resume_ckpt.get("iter", 0)
+    _batch_gen.manual_seed(args.seed + iter_start)
     if iter_start >= max_iters:
         print(f"✅ Entraînement déjà terminé ({iter_start}/{max_iters} itérations) — rien à faire")
     else:

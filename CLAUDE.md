@@ -29,7 +29,9 @@ Token Embedding (wte, weight-tied avec lm_head)
 | `chat.py` | CLI interactif, effort levels, thinking blocks, KV-cache persistant |
 | `session_cache.py` | Sérialisation/restauration du KV-cache entre sessions (format v3 : ids exacts + historique) |
 | `structured.py` | Structured outputs : matcher JSON Schema octet par octet, masques de tokens, complétion la plus courte |
-| `tests/` | Suite pytest (modèle, session, chat, structured) — lancée par la CI |
+| `popixa_eval.py` | `popixa eval` (bpb, paires minimales FR, échantillons → eval.json) + `popixa bench` |
+| `evals/` | `fr_paires.jsonl` (généré par `build_paires.py` depuis `paires/*.py`), `prompts_fr.txt`, `BASELINES.md` |
+| `tests/` | Suite pytest (modèle, session, chat, structured, eval) — lancée par la CI |
 | `data_prep.py` | Téléchargement + tokenisation (tiktoken BPE ou char-level) |
 | `popixa_cli.py` | Point d'entrée `popixa` avec shell interactif |
 
@@ -37,6 +39,8 @@ Token Embedding (wte, weight-tied avec lm_head)
 
 - Pas de biais (`bias=False`) sur toutes les Linear dans v2
 - `POPIXAConfig` est un `@dataclass` — ajouter `rope_base: int = 10_000` si besoin
+- Presets d'architecture : `model.SIZE_PRESETS` (nano/small/medium), partagés par train.py et bench ;
+  `popixa train` = `small` par défaut, `--seed` (défaut 1337) → poids identiques bit à bit sur CPU
 - `forward(idx, targets=None, past_kvs=None)` :
   - Avec `targets` → retourne `(logits, loss)` pour l'entraînement
   - Sans `targets` → retourne `(logits, present_kvs)` pour l'inférence
@@ -130,6 +134,19 @@ EFFORT_PRESETS = {
   `/stop repetitive|diminishing|off` pour les réponses
 - **Speculative decoding corrigé** — verify en une passe avec masque décalé, cache tronqué aux
   drafts acceptés, drafts n-grammes (prompt lookup) par défaut ; greedy spéculatif == greedy normal
+
+## Implémenté — v2.2 « Mètre-étalon »
+
+- **`popixa eval`** — résultats déterministes (pas de date/durée dans eval.json) :
+  - `bpb` = Σ NLL / (ln 2 × octets UTF-8 des tokens prédits) — fenêtres de block_size sans
+    chevauchement, octets exacts par token (`token_nbytes`) → comparable char vs BPE
+  - `paires` = % log P(bonne) > log P(fautive) (sommes BLiMP, amorce « \n »), comparé à
+    `baseline_longueur` (préférer la phrase la plus courte) ; un modèle non entraîné ≈ baseline
+  - `samples` = 20 amorces, graine `seed + i`, `stop_policy="off"`, distinct-2 + drapeaux répétitifs
+- **Paires** : modifier `evals/paires/<phénomène>.py` puis `python evals/build_paires.py`
+  (la CI vérifie avec `--check`) ; une seule différence par paire, longueurs équilibrées
+- **`popixa bench`** — tokens/s train (fwd+bwd+AdamW) et génération, mémoire pic,
+  TFLOPS ≈ (6N + 12·L·T·d) × tokens/s
 
 ## Ce qui reste à implémenter (backlog)
 
