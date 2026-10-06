@@ -78,6 +78,26 @@ def test_bpb_counts_exact_bytes_and_ignores_batching():
     assert short["tokens"] == 50 and short["windows"] == 2
     with pytest.raises(ValueError):
         pe.eval_bpb(model, data[:1], nbytes)
+    with pytest.raises(ValueError, match="vocabulaire"):              # données d'un autre tokenizer
+        pe.eval_bpb(model, np.array([1, 2, 500, 3], dtype=np.uint16), nbytes)
+
+
+def test_max_bytes_selects_same_text_for_any_tokenizer():
+    """--max_bytes : même extrait de texte (en octets) que le tokenizer soit caractère ou BPE."""
+    tiktoken = pytest.importorskip("tiktoken")
+    try:
+        enc = tiktoken.get_encoding("gpt2")
+    except Exception:
+        pytest.skip("encodage gpt2 indisponible (hors ligne)")
+    stoi, itos = _char_codec()
+    char_nb = pe.token_nbytes({"tokenizer": "char", "vocab": {"stoi": stoi, "itos": itos}}, len(CHARS))
+    gpt_nb = pe.token_nbytes({"tokenizer": "tiktoken_gpt2"}, 50304)
+    r_c = pe.eval_bpb(make_model(block_size=64, vocab_size=len(CHARS)),
+                      np.array([stoi[c] for c in TEXT], dtype=np.uint16), char_nb, max_bytes=300)
+    r_g = pe.eval_bpb(make_model(block_size=64, vocab_size=50304, n_embd=32),
+                      np.array(enc.encode_ordinary(TEXT), dtype=np.uint16), gpt_nb, max_bytes=300)
+    assert r_c["bytes"] == 300 and 290 <= r_g["bytes"] <= 300          # frontière de token BPE
+    assert r_g["tokens"] < r_c["tokens"]
 
 
 def test_bpb_denominator_is_tokenizer_independent():
@@ -128,6 +148,24 @@ def test_sequence_logprob_matches_manual_sum():
     assert math.isfinite(pe.sequence_logprob(model, prefix, list(range(1, 40))))
 
 
+def test_eval_pairs_counts_the_good_sentence_as_correct():
+    """Sens de la comparaison : un modèle non entraîné préfère la phrase la plus courte."""
+    stoi, _ = _char_codec()
+    enc = lambda s: [stoi.get(c, 0) for c in s]
+    ckpt = {"tokenizer": "char", "vocab": {"stoi": stoi}}
+    model = make_model(block_size=64, vocab_size=len(CHARS))
+    court_bon = [{"good": "Il dort.", "bad": "Il dorment bien.", "phenomene": "x"}]
+    court_faux = [{"good": "Ils dorment bien.", "bad": "Ils dort.", "phenomene": "x"}]
+    assert pe.eval_pairs(model, enc, ckpt, court_bon)["accuracy"] == 1.0
+    assert pe.eval_pairs(model, enc, ckpt, court_faux)["accuracy"] == 0.0
+    # Égalité exacte avec le calcul direct des log-probabilités
+    pairs = court_bon + court_faux + [{"good": "Je l'aime.", "bad": "Je le aime.", "phenomene": "y"}]
+    prefix = enc("\n")
+    expected = sum(pe.sequence_logprob(model, prefix, enc(p["good"])) >
+                   pe.sequence_logprob(model, prefix, enc(p["bad"])) for p in pairs) / len(pairs)
+    assert pe.eval_pairs(model, enc, ckpt, pairs)["accuracy"] == round(expected, 4)
+
+
 def test_eval_pairs_scores_and_skips_out_of_vocabulary(tmp_path):
     stoi, itos = _char_codec()
     ckpt = {"tokenizer": "char", "vocab": {"stoi": stoi, "itos": itos}}
@@ -171,6 +209,42 @@ def test_untrained_model_is_near_length_baseline():
 
 # ─── samples ─────────────────────────────────────────────────────────────────
 
+def test_pairs_and_prompts_files_are_validated(tmp_path):
+    bad = tmp_path / "p.jsonl"
+    bad.write_text('{"good": "A.", "bad": "B."}\n', encoding="utf-8")             # phenomene manquant
+    with pytest.raises(ValueError, match=":1"):
+        pe.load_pairs(str(bad))
+    bad.write_text('["A.", "B."]\n', encoding="utf-8")
+    with pytest.raises(ValueError):
+        pe.load_pairs(str(bad))
+    bad.write_text("\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="aucune paire"):
+        pe.load_pairs(str(bad))
+    empty = tmp_path / "a.txt"
+    empty.write_text("# seulement un commentaire\n\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="aucune amorce"):
+        pe.load_prompts(str(empty))
+
+
+def test_weights_fingerprint_depends_on_weights_only(tmp_path, char_checkpoint):
+    """Mêmes poids → même empreinte, même copiés ailleurs ; poids différents → empreinte différente."""
+    import shutil
+    ckpt = char_checkpoint(block_size=64)
+    copy = tmp_path / "ailleurs" / "checkpoint.pt"
+    copy.parent.mkdir()
+    shutil.copy(ckpt, copy)
+    os.utime(copy, (1, 1))
+    pairs = _pairs_file(tmp_path)
+    run = lambda c: pe.run_eval(c, tasks=("paires",), pairs_path=pairs, device="cpu", log=lambda m: None)[0]
+    assert run(ckpt) == run(str(copy))
+    sd = torch.load(ckpt, weights_only=False)["model"]
+    assert pe.weights_fingerprint(sd) == pe.weights_fingerprint({k: v.clone() for k, v in sd.items()})
+    sd2 = dict(sd)
+    k0 = sorted(sd2)[0]
+    sd2[k0] = sd2[k0] + 1e-3
+    assert pe.weights_fingerprint(sd) != pe.weights_fingerprint(sd2)
+
+
 def test_samples_are_deterministic():
     stoi, itos = _char_codec()
     model = make_model(block_size=64, vocab_size=len(CHARS))
@@ -184,9 +258,27 @@ def test_samples_are_deterministic():
     summary, rows = a
     assert summary["n"] == 3 and all(len(r["text"]) == 12 for r in rows)
     assert pe.eval_samples(model, encode, decode, prompts[:3], n_tokens=12, seed=8)[1] != rows
+    # 12 tokens : trop court pour les détecteurs → None, pas un faux 0 %
+    assert summary["taux_repetitif"] is None and summary["taux_diminishing"] is None
     md = pe.samples_markdown(rows, summary, "ckpt.pt")
-    assert md.count("```text") == 3 and prompts[0] in md
+    assert md.count("```text") == 3 and prompts[0] in md and "répétitifs : —" in md
+    long_summary, _ = pe.eval_samples(model, encode, decode, prompts[:1], n_tokens=120, seed=7)
+    assert long_summary["taux_repetitif"] is not None and long_summary["taux_diminishing"] is not None
 
+
+def test_samples_flag_prompts_altered_by_the_tokenizer():
+    """Vocabulaire caractère sans accents : l'amorce vue par le modèle est signalée, pas cachée."""
+    vocab = sorted(set("abcdefghijklmnopqrstuvwxyz ILM,.\n"))
+    stoi = {c: i for i, c in enumerate(vocab)}
+    itos = {i: c for c, i in stoi.items()}
+    model = make_model(block_size=64, vocab_size=len(vocab))
+    summary, rows = pe.eval_samples(model, lambda s: [stoi.get(c, 0) for c in s],
+                                    lambda ids: "".join(itos[i] for i in ids),
+                                    ["Il dort", "Il était une fois"], n_tokens=5)
+    assert summary["amorces_alterees"] == 1
+    assert rows[0]["amorce_vue"] is None and rows[1]["amorce_vue"] == "Il \ntait une fois"
+    md = pe.samples_markdown(rows, summary, "c.pt")
+    assert "amorce altérée" in md and "Il \ntait une fois" in md
 
 def test_wilson_interval():
     assert pe.wilson_ic95(0, 0) is None
@@ -234,16 +326,32 @@ def test_cli_eval_writes_reproducible_json(tmp_path, char_checkpoint):
 
 def test_cli_eval_reports_errors(tmp_path, char_checkpoint):
     ckpt = char_checkpoint(block_size=64)
-    r = _popixa("eval", "--checkpoint", ckpt, "--tasks", "paires,inconnue", cwd=tmp_path)
-    assert r.returncode == 1 and "inconnue" in r.stderr
-    r = _popixa("eval", "--checkpoint", ckpt, "--data_dir", str(tmp_path / "absent"), "--tasks", "bpb",
-                cwd=tmp_path)
-    assert r.returncode == 1 and "introuvable" in r.stderr
+
+    def fails(*args, msg):
+        r = _popixa("eval", "--checkpoint", ckpt, *args, cwd=tmp_path)
+        assert r.returncode == 1, r.stderr
+        assert "Traceback" not in r.stderr and "✗" in r.stderr and msg in r.stderr, r.stderr
+
+    fails("--tasks", "paires,inconnue", msg="inconnue")
+    fails("--data_dir", str(tmp_path / "absent"), "--tasks", "bpb", msg="introuvable")
+    fails("--tasks", "bpb", msg="aucune tâche")                                   # bpb sans --data_dir
+    fails("--tasks", "paires", "--out", str(tmp_path / "absent" / "e.json"), msg="--out")
+    nometa = tmp_path / "nometa"
+    nometa.mkdir()
+    np.zeros(100, dtype=np.uint16).tofile(str(nometa / "val.bin"))
+    fails("--data_dir", str(nometa), "--tasks", "bpb", msg="meta.pkl")
+    bad_pairs = tmp_path / "bad.jsonl"
+    bad_pairs.write_text('{"good": 1}\n', encoding="utf-8")
+    fails("--tasks", "paires", "--pairs", str(bad_pairs), msg="paire invalide")
     r = _popixa("eval", "--checkpoint", str(tmp_path / "absent.pt"), cwd=tmp_path)
-    assert r.returncode == 1
+    assert r.returncode == 1 and "Traceback" not in r.stderr
+    r = _popixa("eval", "--checkpoint", ckpt, "--samples_tokens", "0", cwd=tmp_path)
+    assert r.returncode == 2 and "doit être > 0" in r.stderr                       # argparse
 
 
 def test_cli_version():
+    import popixa_cli
+    assert pe.popixa_version() == popixa_cli.popixa_version()
     r = _popixa("--version", cwd=ROOT)
     assert r.returncode == 0 and r.stdout.strip() == f"nanoPOPIXA {pe.popixa_version()}"
     with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
@@ -255,6 +363,15 @@ def test_cli_version():
 def test_bench_quick_run():
     r = pe.run_bench(size="nano", vocab_size=64, batch_size=1, seconds=0.1, gen_tokens=8, device="cpu")
     assert r["size"] == "nano" and r["block_size"] == 512 and r["train_steps"] >= 2
-    for k in ("train_tok_s", "train_tflops", "gen_tok_s", "gen_spec_tok_s", "peak_memory_mb"):
+    for k in ("train_tok_s", "train_tflops", "gen_tok_s", "peak_memory_mb"):
         assert r[k] > 0, k
+    assert r["dropout"] == 0.1 and r["memory_kind"]
     json.dumps(r)
+
+
+def test_cli_bench_validates_arguments():
+    for args in (("--batch", "0"), ("--vocab", "-3")):
+        r = _popixa("bench", *args, cwd=ROOT)
+        assert r.returncode == 2 and "doit être > 0" in r.stderr
+    r = _popixa("bench", "--dropout", "1.5", cwd=ROOT)
+    assert r.returncode == 1 and "Traceback" not in r.stderr

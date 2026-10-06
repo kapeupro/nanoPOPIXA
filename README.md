@@ -176,7 +176,7 @@ popixa gen --schema '{"type":"object","properties":{"nom":{"type":"string"}},"re
 ```bash
 popixa eval --data_dir data/ --out eval.json    # les 3 tâches, échantillons dans samples.md
 popixa eval --tasks paires                      # sans données : paires minimales seules
-popixa eval --data_dir data/ --max_tokens 200000   # bpb sur un extrait (plus rapide)
+popixa eval --data_dir data/ --max_bytes 1000000  # bpb sur le 1er Mo de texte (plus rapide)
 popixa bench                                    # preset small, ~15 s
 popixa bench --size medium --json               # sortie JSON
 ```
@@ -185,14 +185,19 @@ popixa bench --size medium --json               # sortie JSON
 |---|---|
 | `bpb` | **Bits par octet** sur `val.bin` (fenêtres de `block_size` sans chevauchement). Divisé par les octets UTF-8 du texte, pas par les tokens : comparable entre tokenizer caractère et BPE. Plus bas = mieux. |
 | `paires` | **Paires minimales françaises** (`evals/fr_paires.jsonl`) : % de paires où la phrase correcte est plus probable que la fautive — accord sujet-verbe, accord nominal, participe passé, élision, prépositions. À comparer à `baseline_longueur` (score obtenu en préférant toujours la phrase la plus courte). |
-| `samples` | 20 amorces (`evals/prompts_fr.txt`) à graine fixe → `samples.md`, avec distinct-2 et taux de sorties répétitives. |
+| `samples` | 20 amorces (`evals/prompts_fr.txt`) à graine fixe, 128 tokens chacune → `samples.md`, avec distinct-2 et taux de sorties répétitives. Une amorce que le tokenizer ne sait pas représenter (caractère hors vocabulaire) est signalée. |
 
-`eval.json` ne contient ni date ni durée : deux évaluations du même checkpoint donnent le même
-fichier, on peut le versionner et le comparer. Chiffres de référence : [`evals/BASELINES.md`](evals/BASELINES.md).
+`eval.json` ne contient ni date ni durée, et l'empreinte du checkpoint est calculée sur les poids :
+deux évaluations des mêmes poids donnent le même fichier (même copié ailleurs), on peut le versionner
+et le comparer. Le score des paires vient avec son intervalle de confiance à 95 % (≈ ± 5 points) :
+un écart plus petit n'est pas significatif. Chiffres de référence : [`evals/BASELINES.md`](evals/BASELINES.md).
 
-`popixa bench` mesure tokens/s en entraînement (forward + backward + AdamW) et en génération
-(normale et speculative), la mémoire pic et les TFLOPS effectifs, puis estime le temps pour
-1 milliard de tokens d'entraînement sur ta machine.
+> `popixa eval` lit `evals/fr_paires.jsonl` et `evals/prompts_fr.txt` dans le dépôt : installe avec
+> `pip install -e .` (ou passe `--pairs` / `--prompts`).
+
+`popixa bench` mesure tokens/s en entraînement (forward + backward + AdamW, avec le dropout de
+`train.py`) et en génération (greedy, KV-cache), la mémoire et les TFLOPS effectifs, puis estime le
+temps pour 1 milliard de tokens d'entraînement sur ta machine.
 
 ### Commandes in-chat
 
@@ -272,7 +277,8 @@ fichier, on peut le versionner et le comparer. Chiffres de référence : [`evals
 - **Gradient clipping** (1.0)
 - **Gradient accumulation** — simuler de grands batches
 - **Checkpoint resume** — reprendre un entraînement interrompu
-- **Graine fixe** (`--seed`, défaut 1337) — deux entraînements identiques donnent les mêmes poids
+- **Graine fixe** (`--seed`, défaut 1337) — sur CPU, deux entraînements identiques donnent les mêmes
+  poids, bit à bit (sur GPU, certains noyaux ne sont pas déterministes)
 - **Streaming token par token** en chat
 
 ### Gestion du contexte

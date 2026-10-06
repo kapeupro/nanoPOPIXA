@@ -142,11 +142,15 @@ EFFORT_PRESETS = {
     chevauchement, octets exacts par token (`token_nbytes`) → comparable char vs BPE
   - `paires` = % log P(bonne) > log P(fautive) (sommes BLiMP, amorce « \n »), comparé à
     `baseline_longueur` (préférer la phrase la plus courte) ; un modèle non entraîné ≈ baseline
-  - `samples` = 20 amorces, graine `seed + i`, `stop_policy="off"`, distinct-2 + drapeaux répétitifs
+  - `samples` = 20 amorces × 128 tokens, graine `seed + i`, `stop_policy="off"`, distinct-2 + drapeaux
+    répétitifs (None si trop court pour le détecteur), amorces altérées par le tokenizer signalées
+  - empreinte = sha256 des poids (`weights_fingerprint`), pas du fichier ; IC 95 % (Wilson) sur les paires
 - **Paires** : modifier `evals/paires/<phénomène>.py` puis `python evals/build_paires.py`
   (la CI vérifie avec `--check`) ; une seule différence par paire, longueurs équilibrées
-- **`popixa bench`** — tokens/s train (fwd+bwd+AdamW) et génération, mémoire pic,
-  TFLOPS ≈ (6N + 12·L·T·d) × tokens/s
+- **`popixa bench`** — tokens/s train (fwd+bwd+AdamW, dropout de train.py) et génération greedy,
+  mémoire (nature indiquée : pic CUDA / driver MPS / RSS processus), TFLOPS ≈ (6N + 12·L·T·d) × tokens/s
+- **`train.py --resume`** sans `--size` → taille déduite du checkpoint (`_size_of`) ; garde MPS
+  testée sur l'architecture effective
 
 ## Ce qui reste à implémenter (backlog)
 

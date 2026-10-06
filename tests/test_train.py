@@ -15,8 +15,9 @@ ENV = dict(os.environ, PYTHONPATH=ROOT, OMP_NUM_THREADS="1")
 
 
 def _train(tmp_path, *extra, size="nano"):
+    size_args = ["--size", size] if size else []
     return subprocess.run(
-        [sys.executable, os.path.join(ROOT, "train.py"), "--size", size, "--batch_size", "2", *extra],
+        [sys.executable, os.path.join(ROOT, "train.py"), *size_args, "--batch_size", "2", *extra],
         cwd=str(tmp_path), env=ENV, capture_output=True, text=True, timeout=600,
     )
 
@@ -84,3 +85,18 @@ def test_seed_makes_training_reproducible(tmp_path):
     same = lambda x, y: all(torch.equal(weights[x][k], weights[y][k]) for k in weights[x])
     assert same("a", "b")                       # même graine → mêmes poids, bit à bit
     assert not same("a", "c")
+
+
+def test_resume_without_size_keeps_checkpoint_size(tmp_path):
+    """--resume sans --size : taille (et hyperparamètres) du checkpoint, pas le défaut small."""
+    (tmp_path / "input.txt").write_text("abcdefgh " * 900, encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2").returncode == 0                  # nano
+    r = _train(tmp_path, "--max_iters", "3", "--resume", size=None)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "[nano]" in r.stdout and "≠ --size" not in r.stdout
+
+
+def test_seed_out_of_numpy_range_is_accepted(tmp_path):
+    (tmp_path / "input.txt").write_text("abcdefgh " * 900, encoding="utf-8")
+    r = _train(tmp_path, "--max_iters", "1", "--seed", str(2 ** 33))
+    assert r.returncode == 0, r.stdout + r.stderr

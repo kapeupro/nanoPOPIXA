@@ -78,6 +78,9 @@ def main(argv=None) -> int:
         return 1
     text = render(pairs)
     if "--check" in argv:
+        if not os.path.exists(OUT_PATH):
+            print("evals/fr_paires.jsonl absent : python evals/build_paires.py", file=sys.stderr)
+            return 1
         with open(OUT_PATH, encoding="utf-8") as f:
             if f.read() != text:
                 print("evals/fr_paires.jsonl n'est pas à jour : python evals/build_paires.py",

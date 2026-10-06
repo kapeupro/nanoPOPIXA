@@ -7,11 +7,13 @@ au-delà du bruit de mesure (intervalle de confiance des paires ≈ ± 5 points)
 
 Corpus : Victor Hugo, *Les Misérables* tome I (`popixa prep --dataset hugo --char`),
 677 686 caractères, tokenizer **caractère** (vocabulaire 115), split `val` = 67 769 tokens.
+Échantillons : 20 amorces × 128 tokens, graine 1337, temperature 0.8, top_k 40 ; aucune sortie
+répétitive ni à rendements décroissants pour les deux modèles.
 
 | Modèle | bpb ↓ | loss | Paires ↑ [IC 95 %] | Baseline longueur | distinct-2 |
 |---|---|---|---|---|---|
-| `nano` aléatoire (non entraîné) | 6.766 | 4.784 | 53.2 % [47.9–58.5] | 53.0 % | 0.94 (bruit) |
-| `nano` · 1 000 itérations · batch 16 | **2.900** | 2.050 | **61.5 %** [56.2–66.6] | 53.0 % | 0.71 |
+| `nano` aléatoire (non entraîné) | 6.766 | 4.784 | 53.2 % [47.9–58.5] | 53.0 % | 0.93 (bruit) |
+| `nano` · 1 000 itérations · batch 16 | **2.900** | 2.050 | **61.5 %** [56.2–66.6] | 53.0 % | 0.66 |
 
 Paires par phénomène (338 paires couvertes ; 6 contiennent « œ », absent du vocabulaire de Hugo) :
 
@@ -47,10 +49,10 @@ Entraînement : ≈ 26 min sur CPU 4 cœurs (Xeon 2,1 GHz, 3 threads), courbe de
 
 Machine : conteneur cloud, Intel Xeon 2,1 GHz, 4 cœurs, sans GPU, PyTorch 2.x CPU, 4 threads.
 
-| Preset | Vocab | Batch | Entraînement (dropout 0.1) | Sans dropout | Génération | Speculative |
-|---|---|---|---|---|---|---|
-| `nano` (0.9M) | 115 | 16 × 512 | 6 540 tok/s | 14 720 tok/s | 610 tok/s | 600 tok/s |
-| `small` (30M avec embeddings) | 50 257 | 4 × 1024 | 515 tok/s | 1 150 tok/s | 156 tok/s | 153 tok/s |
+| Preset | Vocab | Batch | Entraînement (dropout 0.1) | Sans dropout | Génération (greedy) |
+|---|---|---|---|---|---|
+| `nano` (0.9M) | 115 | 16 × 512 | 6 540 tok/s | 14 720 tok/s | 610 tok/s |
+| `small` (30M avec embeddings) | 50 257 | 4 × 1024 | 515 tok/s | 1 150 tok/s | 156 tok/s |
 
 À retenir :
 - Sur CPU, le **dropout d'attention** fait passer `scaled_dot_product_attention` sur

@@ -9,25 +9,31 @@ qu'elle fait mieux que celle-ci.
 
 ### Ajouté
 - **`popixa eval`** — évaluation déterministe d'un checkpoint, résultats dans `eval.json`
-  (sans date ni durée : même checkpoint → même fichier) :
+  (sans date ni durée, empreinte calculée sur les poids : mêmes poids → même fichier) :
   - `bpb` : bits par octet sur `val.bin`, comparable entre tokenizers (caractère, BPE) ;
+    `--max_bytes` évalue un extrait de même taille en octets quel que soit le tokenizer ;
   - `paires` : 344 paires minimales françaises (accord sujet-verbe, accord nominal, participe
     passé, élision, prépositions), score avec intervalle de confiance à 95 %, comparé à une
     baseline « phrase la plus courte » ;
-  - `samples` : 20 amorces françaises à graine fixe → `samples.md`, distinct-2 et taux de
-    sorties répétitives.
+  - `samples` : 20 amorces françaises à graine fixe, 128 tokens → `samples.md`, distinct-2,
+    taux de sorties répétitives, amorces altérées par le tokenizer signalées.
 - **`evals/`** — jeu de paires minimales `fr_paires.jsonl`, reconstruit et vérifié par
   `evals/build_paires.py` (`--check` en CI), amorces `prompts_fr.txt`, chiffres de
   référence `BASELINES.md`.
-- **`popixa bench`** — tokens/s en entraînement et en génération (normale et speculative),
-  mémoire pic, TFLOPS effectifs, temps estimé pour 1 milliard de tokens.
+- **`popixa bench`** — tokens/s en entraînement (avec le dropout de train.py, `--dropout`) et en
+  génération, mémoire, TFLOPS effectifs, temps estimé pour 1 milliard de tokens.
 - **`train.py --seed`** (défaut 1337) — initialisation, dropout et tirage des batchs
   reproductibles : même graine → mêmes poids, bit à bit (CPU).
 - **`popixa --version`**.
 
 ### Modifié
 - `popixa train` entraîne un modèle **`small`** par défaut (au lieu de `medium`, qui
-  dépassait la mémoire MPS des Mac Apple Silicon).
+  dépassait la mémoire MPS des Mac Apple Silicon). `--resume` sans `--size` reprend la taille du
+  checkpoint (un run `medium` lancé en 2.1 garde ses hyperparamètres `medium`).
+
+### Mise à jour depuis 2.1
+- Installation éditable : après `git pull`, relance `pip install -e .` (ou `popixa update`) pour
+  que la commande `popixa` connaisse les nouveaux modules.
 - README : les durées d'entraînement annoncées (« nano : 10-15 min sur CPU ») étaient fausses ;
   remplacées par la mesure (`popixa bench`, `evals/BASELINES.md`).
 - Les presets d'architecture sont partagés (`model.SIZE_PRESETS`) entre `train.py` et

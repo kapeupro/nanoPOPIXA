@@ -51,20 +51,29 @@ def _device() -> str:
 
 
 def popixa_version() -> str:
-    """Version du code exécuté : pyproject.toml du dépôt, sinon paquet installé, sinon « dev »."""
-    try:
-        import re
-        with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
-            m = re.search(r'^version\s*=\s*"([^"]+)"', f.read(), re.MULTILINE)
-        if m:
-            return m.group(1)
-    except OSError:
-        pass
-    try:
-        from importlib.metadata import version
-        return version("nanopopixa")
-    except Exception:
-        return "dev"
+    from popixa_cli import popixa_version as _v
+    return _v()
+
+
+def weights_fingerprint(state_dict) -> str:
+    """sha256 des poids (nom, dtype, forme, octets) : mêmes poids → même empreinte, quels
+    que soient l'emplacement, la date ou l'état de l'optimizer du fichier checkpoint."""
+    import hashlib
+    h = hashlib.sha256()
+    for name in sorted(state_dict):
+        t = state_dict[name].detach().cpu().contiguous()
+        h.update(f"{name}|{t.dtype}|{tuple(t.shape)}|".encode())
+        h.update(t.reshape(-1).view(torch.uint8).numpy().tobytes())
+    return h.hexdigest()[:16]
+
+
+def _default_file(path: str, option: str) -> str:
+    """Fichiers de evals/ : présents dans le dépôt (pip install -e .), pas dans une installation
+    non éditable → message clair au lieu d'un FileNotFoundError obscur."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{path} introuvable : installe nanoPOPIXA depuis le dépôt "
+                                f"(pip install -e .) ou passe {option} FICHIER")
+    return path
 
 
 def token_nbytes(ckpt: dict, vocab_size: int) -> np.ndarray:
@@ -79,14 +88,16 @@ def load_split(data_dir: str, split: str, ckpt: dict) -> np.ndarray:
     if not os.path.exists(path):
         raise FileNotFoundError(f"{path} introuvable (popixa prep --data_dir {data_dir})")
     meta_path = os.path.join(data_dir, "meta.pkl")
-    if os.path.exists(meta_path):
-        with open(meta_path, "rb") as f:
-            meta = pickle.load(f)
-        ck_tok = ckpt.get("tokenizer", "char")
-        if meta.get("tokenizer", "char") != ck_tok:
-            raise ValueError(f"tokenizer des données ({meta.get('tokenizer')}) ≠ checkpoint ({ck_tok})")
-        if ck_tok != "tiktoken_gpt2" and "vocab" in ckpt and meta.get("stoi") != ckpt["vocab"]["stoi"]:
-            raise ValueError("vocabulaire caractère des données ≠ checkpoint")
+    if not os.path.exists(meta_path):
+        raise FileNotFoundError(f"{meta_path} introuvable : impossible de vérifier que les données ont "
+                                f"le tokenizer du checkpoint (popixa prep --data_dir {data_dir})")
+    with open(meta_path, "rb") as f:
+        meta = pickle.load(f)
+    ck_tok = ckpt.get("tokenizer", "char")
+    if meta.get("tokenizer", "char") != ck_tok:
+        raise ValueError(f"tokenizer des données ({meta.get('tokenizer')}) ≠ checkpoint ({ck_tok})")
+    if ck_tok != "tiktoken_gpt2" and "vocab" in ckpt and meta.get("stoi") != ckpt["vocab"]["stoi"]:
+        raise ValueError("vocabulaire caractère des données ≠ checkpoint")
     return np.memmap(path, dtype=np.uint16, mode="r")
 
 
@@ -96,19 +107,29 @@ def load_split(data_dir: str, split: str, ckpt: dict) -> np.ndarray:
 
 @torch.no_grad()
 def eval_bpb(model, data: np.ndarray, nbytes: np.ndarray, max_tokens: int = None,
-             batch_size: int = 8, device: str = "cpu") -> dict:
+             batch_size: int = 8, device: str = "cpu", max_bytes: int = None) -> dict:
     """
     Passe complète et déterministe sur `data` : fenêtres consécutives de block_size tokens,
     sans chevauchement (la dernière peut être plus courte). Chaque token prédit compte une
     fois ; le dénominateur en octets est la somme exacte des octets des tokens prédits
     (indépendant des frontières de fenêtres et du tokenizer).
+    max_bytes : ne prédire que les tokens couvrant les max_bytes premiers octets de texte →
+    même extrait pour tous les tokenizers (bpb comparables) ; max_tokens : plafond en tokens.
     """
     block = model.config.block_size
     n_pred = len(data) - 1
     if max_tokens is not None:
         n_pred = min(n_pred, max_tokens)
+    if max_bytes is not None:
+        # chaque token fait ≥ 1 octet (sauf tokens spéciaux, rares) → max_bytes tokens suffisent
+        cum = np.cumsum(nbytes[data[1:1 + min(n_pred, max_bytes)].astype(np.int64)])
+        n_pred = int(np.searchsorted(cum, max_bytes, side="right"))
     if n_pred <= 0:
         raise ValueError("pas assez de tokens pour évaluer")
+    top = int(data[:n_pred + 1].max())
+    if top >= model.config.vocab_size:
+        raise ValueError(f"id de token {top} ≥ vocabulaire du modèle ({model.config.vocab_size}) : "
+                         "données préparées avec un autre tokenizer")
 
     n_full, rest = divmod(n_pred, block)
     # Fenêtres pleines regroupées en batch, puis la fenêtre partielle finale seule
@@ -146,9 +167,25 @@ def eval_bpb(model, data: np.ndarray, nbytes: np.ndarray, max_tokens: int = None
 # Tâche paires — paires minimales françaises
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_pairs(path: str = PAIRS_PATH) -> list:
+def load_pairs(path: str = None) -> list:
+    """Paires JSONL {"good", "bad", "phenomene", ...} ; ValueError si le format est invalide."""
+    path = path or _default_file(PAIRS_PATH, "--pairs")
+    pairs = []
     with open(path, encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
+        for n, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            try:
+                p = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"{path}:{n} : JSON invalide ({e})")
+            if not (isinstance(p, dict) and all(isinstance(p.get(k), str) and p.get(k)
+                                                for k in ("good", "bad", "phenomene"))):
+                raise ValueError(f'{path}:{n} : paire invalide (attendu {{"good", "bad", "phenomene"}} non vides)')
+            pairs.append(p)
+    if not pairs:
+        raise ValueError(f"{path} : aucune paire")
+    return pairs
 
 
 def _encodable(text: str, encode, ckpt: dict) -> bool:
@@ -223,9 +260,13 @@ def eval_pairs(model, encode, ckpt: dict, pairs: list, device: str = "cpu") -> d
 # Tâche samples — échantillons à graine fixe
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_prompts(path: str = PROMPTS_PATH) -> list:
+def load_prompts(path: str = None) -> list:
+    path = path or _default_file(PROMPTS_PATH, "--prompts")
     with open(path, encoding="utf-8") as f:
-        return [line.rstrip("\n") for line in f if line.strip() and not line.startswith("#")]
+        prompts = [line.rstrip("\n") for line in f if line.strip() and not line.startswith("#")]
+    if not prompts:
+        raise ValueError(f"{path} : aucune amorce (lignes vides et # commentaires ignorées)")
+    return prompts
 
 
 def distinct2(tokens: list) -> float:
@@ -233,35 +274,58 @@ def distinct2(tokens: list) -> float:
     return len(set(bigrams)) / len(bigrams) if bigrams else 0.0
 
 
-def eval_samples(model, encode, decode, prompts: list, n_tokens: int = 100, seed: int = 1337,
+# Longueurs minimales pour que les détecteurs du modèle puissent répondre « oui »
+# (_is_repetitive : fenêtre de 40 ; _has_diminishing_returns : 3 fenêtres de 40)
+MIN_TOKENS_REPETITIF   = 40
+MIN_TOKENS_DIMINISHING = 120
+
+
+def eval_samples(model, encode, decode, prompts: list, n_tokens: int = 128, seed: int = 1337,
                  temperature: float = 0.8, top_k: int = 40, device: str = "cpu") -> tuple:
-    """Génère une continuation par amorce (graine fixe par amorce, aucun arrêt anticipé)."""
+    """
+    Génère une continuation par amorce (graine fixe par amorce, aucun arrêt anticipé).
+    Une amorce que le tokenizer ne peut pas représenter (caractère hors vocabulaire) est
+    signalée (amorce_vue) au lieu d'être altérée en silence. Les taux répétitif / diminishing
+    valent None si n_tokens est trop court pour que le détecteur puisse se déclencher.
+    """
     from model import nanoPOPIXA
     model.train(False)
     rows = []
     for i, prompt in enumerate(prompts):
         torch.manual_seed(seed + i)
-        ctx = torch.tensor([encode(prompt)], dtype=torch.long, device=device)
+        ids = encode(prompt)
+        vu = decode(ids)
+        ctx = torch.tensor([ids or [0]], dtype=torch.long, device=device)
         toks = list(model.generate_stream(ctx, n_tokens, temperature, top_k, stop_policy="off"))
         rows.append({
             "prompt":      prompt,
+            "amorce_vue":  vu if vu != prompt else None,
             "text":        decode(toks),
             "distinct2":   round(distinct2(toks), 4),
             "repetitive":  bool(nanoPOPIXA._is_repetitive(toks)),
             "diminishing": bool(nanoPOPIXA._has_diminishing_returns(toks)),
         })
     n = len(rows)
+
+    def taux(key, min_tokens):
+        return round(sum(r[key] for r in rows) / n, 4) if n and n_tokens >= min_tokens else None
+
     summary = {
         "n":                n,
         "tokens":           n_tokens,
         "seed":             seed,
         "temperature":      temperature,
         "top_k":            top_k,
+        "amorces_alterees": sum(r["amorce_vue"] is not None for r in rows),
         "distinct2":        round(sum(r["distinct2"] for r in rows) / n, 4) if n else None,
-        "taux_repetitif":   round(sum(r["repetitive"] for r in rows) / n, 4) if n else None,
-        "taux_diminishing": round(sum(r["diminishing"] for r in rows) / n, 4) if n else None,
+        "taux_repetitif":   taux("repetitive", MIN_TOKENS_REPETITIF),
+        "taux_diminishing": taux("diminishing", MIN_TOKENS_DIMINISHING),
     }
     return summary, rows
+
+
+def _pct(x) -> str:
+    return "—" if x is None else f"{x:.0%}"
 
 
 def samples_markdown(rows: list, summary: dict, checkpoint: str) -> str:
@@ -270,15 +334,21 @@ def samples_markdown(rows: list, summary: dict, checkpoint: str) -> str:
         f"- checkpoint : `{checkpoint}`",
         f"- {summary['n']} amorces · {summary['tokens']} tokens · graine {summary['seed']} · "
         f"temperature {summary['temperature']} · top_k {summary['top_k']}",
-        f"- distinct-2 moyen : {summary['distinct2']} · répétitifs : {summary['taux_repetitif']:.0%}"
-        f" · diminishing returns : {summary['taux_diminishing']:.0%}", "",
+        f"- distinct-2 moyen : {summary['distinct2']} · répétitifs : {_pct(summary['taux_repetitif'])}"
+        f" · diminishing returns : {_pct(summary['taux_diminishing'])}",
     ]
+    if summary.get("amorces_alterees"):
+        lines.append(f"- ⚠ {summary['amorces_alterees']} amorce(s) altérée(s) par le tokenizer "
+                     "(caractères hors vocabulaire)")
+    lines.append("")
     for i, r in enumerate(rows, 1):
         flags = " ".join(f for f, on in (("⟳ répétitif", r["repetitive"]),
-                                         ("⇣ diminishing", r["diminishing"])) if on)
+                                         ("⇣ diminishing", r["diminishing"]),
+                                         ("⚠ amorce altérée", r.get("amorce_vue") is not None)) if on)
+        seen = r["amorce_vue"] if r.get("amorce_vue") is not None else r["prompt"]
         lines += [f"## {i}. {r['prompt']}", "",
                   f"distinct-2 {r['distinct2']}" + (f" · {flags}" if flags else ""), "",
-                  "```text", r["prompt"] + r["text"], "```", ""]
+                  "```text", seen + r["text"], "```", ""]
     return "\n".join(lines)
 
 
@@ -287,30 +357,31 @@ def samples_markdown(rows: list, summary: dict, checkpoint: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_eval(checkpoint: str, data_dir: str = None, split: str = "val", tasks=TASKS,
-             max_tokens: int = None, pairs_path: str = PAIRS_PATH, prompts_path: str = PROMPTS_PATH,
-             samples_tokens: int = 100, seed: int = 1337, device: str = None,
-             log=print) -> tuple:
+             max_tokens: int = None, pairs_path: str = None, prompts_path: str = None,
+             samples_tokens: int = 128, seed: int = 1337, device: str = None,
+             log=print, max_bytes: int = None) -> tuple:
     """
     Évalue `checkpoint` ; retourne (résultats dict, markdown des échantillons ou None).
     Les résultats ne contiennent ni date ni durée : deux exécutions donnent un JSON identique.
     """
     import contextlib
     from chat import load_model
-    from session_cache import checkpoint_fingerprint
+
+    unknown = [t for t in tasks if t not in TASKS]
+    if unknown:
+        raise ValueError(f"tâche(s) inconnue(s) : {', '.join(unknown)} ({', '.join(TASKS)})")
+    if "bpb" in tasks and not data_dir:
+        raise ValueError("la tâche bpb demande --data_dir (val.bin)")
 
     device = device or _device()
     with contextlib.redirect_stdout(sys.stderr):
         model, encode, decode, ckpt = load_model(checkpoint, device)
 
-    unknown = [t for t in tasks if t not in TASKS]
-    if unknown:
-        raise ValueError(f"tâche(s) inconnue(s) : {', '.join(unknown)} ({', '.join(TASKS)})")
-
     results = {
         "popixa_version": popixa_version(),
         "checkpoint": {
             "path":        os.path.basename(checkpoint),
-            "fingerprint": checkpoint_fingerprint(checkpoint),
+            "fingerprint": weights_fingerprint(model.state_dict()),
             "iter":        ckpt.get("iter"),
             "tokenizer":   ckpt.get("tokenizer", "char"),
             "params":      model.get_num_params(False),
@@ -322,12 +393,10 @@ def run_eval(checkpoint: str, data_dir: str = None, split: str = "val", tasks=TA
     md = None
 
     if "bpb" in tasks:
-        if not data_dir:
-            raise ValueError("la tâche bpb demande --data_dir (val.bin)")
         t0 = time.time()
         data = load_split(data_dir, split, ckpt)
         res = eval_bpb(model, data, token_nbytes(ckpt, model.config.vocab_size),
-                       max_tokens=max_tokens, device=device)
+                       max_tokens=max_tokens, max_bytes=max_bytes, device=device)
         res["split"] = split
         results["tasks"]["bpb"] = res
         log(f"  bpb      {res['bpb']:.4f}  · loss {res['loss']:.4f} · ppl {res['ppl']:.2f}"
@@ -353,8 +422,10 @@ def run_eval(checkpoint: str, data_dir: str = None, split: str = "val", tasks=TA
                                      n_tokens=samples_tokens, seed=seed, device=device)
         results["tasks"]["samples"] = summary
         md = samples_markdown(rows, summary, os.path.basename(checkpoint))
-        log(f"  samples  distinct-2 {summary['distinct2']} · répétitifs {summary['taux_repetitif']:.0%}"
-            f" · {summary['n']} amorces ({time.time() - t0:.1f}s)")
+        log(f"  samples  distinct-2 {summary['distinct2']} · répétitifs {_pct(summary['taux_repetitif'])}"
+            f" · diminishing {_pct(summary['taux_diminishing'])} · {summary['n']} amorces"
+            + (f", {summary['amorces_alterees']} altérées (hors vocabulaire)" if summary["amorces_alterees"] else "")
+            + f" ({time.time() - t0:.1f}s)")
 
     return results, md
 
@@ -363,18 +434,24 @@ def run_eval(checkpoint: str, data_dir: str = None, split: str = "val", tasks=TA
 # popixa bench
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _peak_memory(device: str) -> int:
-    """Mémoire pic en octets (GPU si CUDA/MPS, sinon RSS du processus)."""
+def _peak_memory(device: str) -> tuple:
+    """
+    (octets, nature de la mesure) :
+      cuda → pic alloué pendant le bench (compteur remis à zéro au début) ;
+      mps  → mémoire allouée par le driver à la fin (pas de compteur de pic) ;
+      cpu  → RSS maximal du PROCESSUS (torch compris, et commandes précédentes dans le shell).
+    """
     if device == "cuda":
-        return int(torch.cuda.max_memory_allocated())
+        return int(torch.cuda.max_memory_allocated()), "pic CUDA"
     if device == "mps" and hasattr(torch, "mps") and hasattr(torch.mps, "driver_allocated_memory"):
-        return int(torch.mps.driver_allocated_memory())
+        return int(torch.mps.driver_allocated_memory()), "driver MPS en fin de mesure"
     try:
         import resource
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        return int(rss if sys.platform == "darwin" else rss * 1024)   # octets sur macOS, Ko sur Linux
+        rss = rss if sys.platform == "darwin" else rss * 1024        # octets sur macOS, Ko sur Linux
+        return int(rss), "RSS max du processus, torch compris"
     except ImportError:
-        return 0
+        return 0, "indisponible"
 
 
 def _sync(device: str) -> None:
@@ -392,8 +469,9 @@ def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
       - entraînement : tokens/s (forward + backward + pas AdamW), batch × block_size tokens par pas,
         avec le dropout de train.py (0.1) : sur CPU/MPS, le dropout d'attention fait passer
         scaled_dot_product_attention sur l'implémentation lente → mesurer la vraie configuration
-      - génération   : tokens/s en décodage normal et en speculative decoding (drafts n-grammes)
-      - mémoire pic, TFLOPS effectifs ≈ (6·N + 12·L·T·d) × tokens/s  (N = paramètres)
+      - génération   : tokens/s en décodage greedy avec KV-cache (le speculative decoding n'est pas
+        mesuré : avec des poids aléatoires, ses drafts sont toujours rejetés, le chiffre ne voudrait rien dire)
+      - mémoire (voir _peak_memory), TFLOPS effectifs ≈ (6·N + 12·L·T·d) × tokens/s  (N = paramètres)
     """
     from model import nanoPOPIXA, POPIXAConfig, SIZE_PRESETS
 
@@ -445,10 +523,10 @@ def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
         return n / (time.perf_counter() - t)
 
     prompt = torch.randint(vocab_size, (1, 32), device=device)
-    repetitive = torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8] * 4], device=device)   # favorise les drafts
-    n_gen = min(gen_tokens, T - 40)
+    n_gen = max(1, min(gen_tokens, T - 40))
+    gen_rate(lambda: model.generate_stream(prompt, 4, temperature=0))          # échauffement
     gen_tps = gen_rate(lambda: model.generate_stream(prompt, n_gen, temperature=0))
-    spec_tps = gen_rate(lambda: model.speculative_generate_stream(repetitive, n_gen, temperature=0))
+    memory, memory_kind = _peak_memory(device)
 
     return {
         "size":            size,
@@ -462,7 +540,7 @@ def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
         "train_tok_s":     round(train_tps, 1),
         "train_tflops":    round(train_tps * flops_per_token / 1e12, 4),
         "gen_tok_s":       round(gen_tps, 1),
-        "gen_spec_tok_s":  round(spec_tps, 1),
-        "peak_memory_mb":  round(_peak_memory(device) / 2 ** 20, 1),
+        "peak_memory_mb":  round(memory / 2 ** 20, 1),
+        "memory_kind":     memory_kind,
         "torch":           torch.__version__,
     }
