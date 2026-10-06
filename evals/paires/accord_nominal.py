@@ -15,7 +15,7 @@ construction).
 
 Deux gabarits empêchent de résoudre le jeu par de simples indices de surface :
 
-* « genre_nom » : le déterminant ne porte PAS le genre (l', les, des, leur,
+* « genre_nom » : le déterminant ne porte PAS le genre (l', des, leur,
   ou « mon » devant un nom féminin à voyelle : « Mon école est très
   grande. »). Seul le genre lexical du nom décide de la forme de l'adjectif ;
   certaines phrases ajoutent même un leurre de l'autre genre (« Ma sœur
@@ -124,7 +124,7 @@ GABARITS = {
     "epithete_anteposee": [
         ("Il vit dans un {} château.", "vieux", "vieille", AUDIBLE),
         ("Ils ont acheté une {} ferme.", "vieille", "vieux", AUDIBLE),
-        ("Mon voisin a un {} jardin.", "beau", "belle", AUDIBLE),
+        ("Mon oncle possède un {} cheval.", "beau", "belle", AUDIBLE),
         ("La commune a construit un {} pont.", "nouveau", "nouvelle", AUDIBLE),
         ("Elle attend une {} nouvelle.", "bonne", "bon", AUDIBLE),
         ("Le fermier élève une {} vache.", "grosse", "gros", AUDIBLE),
@@ -133,18 +133,18 @@ GABARITS = {
     "epithete_nombre": [
         ("J'ai vu des chats {} dans la cour.", "noirs", "noir", MUET),
         ("L'enfant a les yeux {}.", "bleus", "bleu", MUET),
-        ("Les {} jours reviennent enfin.", "beaux", "beau", MUET),
+        ("Avec le mois de mai, les {} jours reviennent enfin.", "beaux", "beau", MUET),
         ("Le chasseur a un chien {}.", "fidèle", "fidèles", MUET),
-        ("Il boit un café {}.", "chaud", "chauds", MUET),
-        ("Elle cueille une rose {}.", "rouge", "rouges", MUET),
+        ("Chaque matin, le facteur boit un café {}.", "chaud", "chauds", MUET),
+        ("Au fond du parc, elle cueille une rose {}.", "rouge", "rouges", MUET),
     ],
     # Genre : adjectif attribut du sujet.
     "attribut_genre": [
         ("La porte est {}.", "fermée", "fermé", MUET),
         ("Le musée est {} le dimanche.", "ouvert", "ouverte", AUDIBLE),
         ("Ma tante semble {} depuis son mariage.", "heureuse", "heureux", AUDIBLE),
-        ("Le pain est encore {}.", "frais", "fraîche", AUDIBLE),
-        ("Le loup paraît {} dans la fable.", "cruel", "cruelle", MUET),
+        ("À midi, le pain est encore {}.", "frais", "fraîche", AUDIBLE),
+        ("Dans la fable, le loup paraît {}.", "cruel", "cruelle", MUET),
         ("La princesse était très {}.", "jalouse", "jaloux", AUDIBLE),
     ],
     # Nombre : adjectif attribut du sujet.
@@ -156,8 +156,8 @@ GABARITS = {
         ("Le lac reste {} malgré le vent.", "calme", "calmes", MUET),
         ("Les journées sont {} en été.", "longues", "longue", MUET),
     ],
-    # Genre porté par le nom seul : déterminant non marqué en genre (l', les,
-    # des, leur, « mon » devant voyelle), parfois avec un leurre de l'autre genre.
+    # Genre porté par le nom seul : déterminant non marqué en genre (l', des,
+    # leur, « mon » devant voyelle), parfois avec un leurre de l'autre genre.
     "genre_nom": [
         ("Mon école est très {}.", "grande", "grand", AUDIBLE),
         ("Cette année, l'hiver fut très {}.", "froid", "froide", AUDIBLE),
