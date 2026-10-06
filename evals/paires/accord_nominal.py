@@ -6,7 +6,7 @@ diffèrent que par UN mot, dont la forme porte l'accord :
 * déterminant–nom ......... « une maison » / « *un maison »
 * nom–adjectif épithète ... « une robe blanche » / « *une robe blanc »,
                             « des chats noirs » / « *des chats noir »
-* adjectif attribut ....... « La porte est fermée. » / « *La porte est fermé. »
+* adjectif attribut ....... « La rivière est profonde. » / « *La rivière est profond. »
 
 Chaque gabarit est un cadre de phrase avec une case « {} » ; on y insère soit
 la forme correcte, soit la forme fautive. Tout le reste de la phrase est donc
@@ -19,15 +19,16 @@ Deux gabarits empêchent de résoudre le jeu par de simples indices de surface :
   ou « mon » devant un nom féminin à voyelle : « Mon école est très
   grande. »). Seul le genre lexical du nom décide de la forme de l'adjectif ;
   certaines phrases ajoutent même un leurre de l'autre genre (« Ma sœur
-  porte des gants gris. », « Cette année, l'hiver fut très froid. »).
+  porte des gants gris. », « Cette année-là, l'hiver fut très froid. »).
 * « accord_distance » : un complément du nom de genre ou de nombre opposé
   s'intercale entre le nom et l'attribut (« Le vin de ces collines est
   bon. », « L'histoire de ce vieux roi est vraie. ») ; l'accord ne se joue
   plus dans une fenêtre de deux ou trois mots.
 
-Les adjectifs attributs sont des adjectifs purs, sauf « fermée » (exemple de
-référence du phénomène) et « ouvert », adjectifs lexicalisés : les accords
-de participes passés après « être » relèvent de participe_passe.py.
+Les adjectifs attributs sont des adjectifs purs, sauf « ouvert », adjectif
+lexicalisé (« ouvert le dimanche » décrit un état, pas un passif) : les
+accords de participes passés après « être » (« La porte est fermée. »)
+relèvent de participe_passe.py.
 
 Équilibre des longueurs : le féminin et le pluriel allongent en général le
 mot (« blanc » → « blanche », « noir » → « noirs », « un » → « une »). Pour
@@ -140,7 +141,7 @@ GABARITS = {
     ],
     # Genre : adjectif attribut du sujet.
     "attribut_genre": [
-        ("La porte est {}.", "fermée", "fermé", MUET),
+        ("La rivière est {}.", "profonde", "profond", AUDIBLE),
         ("Le musée est {} le dimanche.", "ouvert", "ouverte", AUDIBLE),
         ("Ma tante semble {} depuis son mariage.", "heureuse", "heureux", AUDIBLE),
         ("À midi, le pain est encore {}.", "frais", "fraîche", AUDIBLE),
@@ -160,7 +161,7 @@ GABARITS = {
     # leur, « mon » devant voyelle), parfois avec un leurre de l'autre genre.
     "genre_nom": [
         ("Mon école est très {}.", "grande", "grand", AUDIBLE),
-        ("Cette année, l'hiver fut très {}.", "froid", "froide", AUDIBLE),
+        ("Cette année-là, l'hiver fut très {}.", "froid", "froide", AUDIBLE),
         ("Ma sœur porte des gants {}.", "gris", "grises", AUDIBLE),
         ("Il a acheté des chaussures {}.", "neuves", "neufs", AUDIBLE),
         ("L'armoire du grenier est très {}.", "lourde", "lourd", AUDIBLE),

@@ -112,7 +112,7 @@
 {"bad": "Le chasseur a un chien fidèles.", "gabarit": "epithete_nombre", "good": "Le chasseur a un chien fidèle.", "phenomene": "accord_nominal"}
 {"bad": "Chaque matin, le facteur boit un café chauds.", "gabarit": "epithete_nombre", "good": "Chaque matin, le facteur boit un café chaud.", "phenomene": "accord_nominal"}
 {"bad": "Au fond du parc, elle cueille une rose rouges.", "gabarit": "epithete_nombre", "good": "Au fond du parc, elle cueille une rose rouge.", "phenomene": "accord_nominal"}
-{"bad": "La porte est fermé.", "gabarit": "attribut_genre", "good": "La porte est fermée.", "phenomene": "accord_nominal"}
+{"bad": "La rivière est profond.", "gabarit": "attribut_genre", "good": "La rivière est profonde.", "phenomene": "accord_nominal"}
 {"bad": "Le musée est ouverte le dimanche.", "gabarit": "attribut_genre", "good": "Le musée est ouvert le dimanche.", "phenomene": "accord_nominal"}
 {"bad": "Ma tante semble heureux depuis son mariage.", "gabarit": "attribut_genre", "good": "Ma tante semble heureuse depuis son mariage.", "phenomene": "accord_nominal"}
 {"bad": "À midi, le pain est encore fraîche.", "gabarit": "attribut_genre", "good": "À midi, le pain est encore frais.", "phenomene": "accord_nominal"}
@@ -125,7 +125,7 @@
 {"bad": "Le lac reste calmes malgré le vent.", "gabarit": "attribut_nombre", "good": "Le lac reste calme malgré le vent.", "phenomene": "accord_nominal"}
 {"bad": "Les journées sont longue en été.", "gabarit": "attribut_nombre", "good": "Les journées sont longues en été.", "phenomene": "accord_nominal"}
 {"bad": "Mon école est très grand.", "gabarit": "genre_nom", "good": "Mon école est très grande.", "phenomene": "accord_nominal"}
-{"bad": "Cette année, l'hiver fut très froide.", "gabarit": "genre_nom", "good": "Cette année, l'hiver fut très froid.", "phenomene": "accord_nominal"}
+{"bad": "Cette année-là, l'hiver fut très froide.", "gabarit": "genre_nom", "good": "Cette année-là, l'hiver fut très froid.", "phenomene": "accord_nominal"}
 {"bad": "Ma sœur porte des gants grises.", "gabarit": "genre_nom", "good": "Ma sœur porte des gants gris.", "phenomene": "accord_nominal"}
 {"bad": "Il a acheté des chaussures neufs.", "gabarit": "genre_nom", "good": "Il a acheté des chaussures neuves.", "phenomene": "accord_nominal"}
 {"bad": "L'armoire du grenier est très lourd.", "gabarit": "genre_nom", "good": "L'armoire du grenier est très lourde.", "phenomene": "accord_nominal"}
