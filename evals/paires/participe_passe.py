@@ -8,8 +8,10 @@ identique caractère pour caractère (différence minimale garantie par
 construction).
 
 Gabarits (identifiant court dans le champ « gabarit ») :
-  - aux_etre : verbe qui se conjugue avec « être » (venir, arriver, partir,
-    tomber, naître, devenir, aller, revenir)
+  - aux_etre : verbe qui se conjugue avec « être » (venir, revenir, devenir,
+    arriver, aller, naître, mourir), à des temps variés (passé composé,
+    plus-que-parfait, futur antérieur, conditionnel passé, passé antérieur,
+    infinitif passé)
         « Le facteur est arrivé ce matin. » / « *Le facteur a arrivé ce matin. »
   - aux_avoir : verbe qui se conjugue avec « avoir » (intransitifs sans
     passif possible, verbes météo, transitif suivi de son objet)
@@ -27,48 +29,76 @@ Gabarits (identifiant court dans le champ « gabarit ») :
   - forme_irreguliere : participe irrégulier remplacé par une forme
     « régularisée » inexistante
         « Il a pris le train de nuit. » / « *Il a prendu le train de nuit. »
-  - participe_infinitif : confusion du participe en -é et de l'infinitif
-    en -er (participe après l'auxiliaire, infinitif après un semi-auxiliaire)
+  - participe_infinitif : participe attendu après l'auxiliaire, remplacé par
+    l'infinitif homophone ou quasi homophone (après « avoir » : -é / -er ;
+    après « être » au féminin pluriel : -ées / -er)
         « Elle a fermé la fenêtre. » / « *Elle a fermer la fenêtre. »
-        « Je vais chercher du pain. » / « *Je vais cherché du pain. »
+        « Les lettres sont arrivées ce matin. » / « *... sont arriver ... »
+    Aucun contexte où l'infinitif est la bonne forme (« Il faut laver... ») :
+    ce serait un test d'orthographe de l'infinitif, hors du phénomène.
+
+Une seule règle violée par paire (gabarits d'auxiliaire) : le sujet y est
+toujours masculin singulier (nom, « il », « tu »). Avec « être », le
+participe a alors la même forme qu'avec « avoir » ; la phrase fautive ne viole
+donc que le choix de l'auxiliaire, jamais l'accord (on évite « *Ils ont
+venus », « *Elle est souri », « *Nous sommes marché »...).
 
 Exclusions volontaires (pour que la phrase fautive soit « sans conteste »
 agrammaticale, et non simplement familière, régionale ou ancienne) :
   - pas d'accord du COD antéposé avec « avoir » (trop subtil, souvent violé) ;
     les pronominaux retenus sont essentiellement pronominaux, sans COD distinct ;
-  - pas de verbes à double auxiliaire selon le sens ou l'usage (monter,
-    descendre, sortir, rentrer, passer, retourner, demeurer, rester,
-    disparaître, apparaître...) dans les gabarits d'auxiliaire ; ils
-    n'apparaissent qu'avec « être » dans les gabarits d'accord, où
+  - dans « aux_etre », on écarte les verbes dont l'emploi avec « avoir » est
+    répandu dans l'usage populaire ou régional ou attesté dans la langue
+    classique (tomber, partir, rester...) ; on privilégie venir, devenir,
+    naître, mourir (aucun emploi avec « avoir »), arriver et aller restant
+    limités à 3 paires ; pas non plus de verbe à double auxiliaire selon le
+    sens (monter, descendre, sortir, rentrer, passer, retourner, demeurer,
+    disparaître, apparaître...) ; ces
+    verbes n'apparaissent qu'avec « être » dans les gabarits d'accord, où
     l'auxiliaire est fixe ;
   - dans « aux_avoir », aucun participe qui puisse faire un passif ou un
     adjectif après « être » (« Il est couru », « Il est pleuré par... »,
-    « Le gâteau est réussi ») ni de « il » impersonnel suivi d'un transitif
-    (« Il est mangé beaucoup de pain » est un passif impersonnel correct) ;
-  - pas de « nous » ni de « vous » dans les gabarits d'accord : le « nous » de
-    modestie et le « vous » de politesse autorisent le singulier ;
-  - formes régularisées fautives (« prendu », « ouvri »...) choisies pour
+    « Le gâteau est réussi »), sauf un transitif suivi de son objet direct
+    (« *Le professeur est lu ce roman »), où la lecture passive est exclue ;
+    pas de « il » impersonnel suivi d'un transitif (« Il est mangé beaucoup
+    de pain » est un passif impersonnel correct) ;
+  - pas de « nous » ni de « vous » sujets d'un participe conjugué avec
+    « être » : le « nous » de modestie et le « vous » de politesse autorisent
+    le singulier, le pluriel ordinaire exige l'accord ;
+  - formes régularisées fautives (« prendu », « mettu »...) choisies pour
     n'être homographes d'aucun mot français (pas de « peigné », « voyé »...) ;
+    une seule forme en *-ri (« ouvri ») pour éviter un schéma répétitif ;
   - pas de participe employé aussi comme adjectif attribut de personne
     (« un homme très voyagé ») dans « aux_avoir ».
 
-Équilibre des longueurs : la bonne phrase est strictement la plus courte dans
-33 paires sur 68 (48,5 %), la plus longue dans 28, de même longueur dans 7.
-Deux gabarits sont orientés par le phénomène lui-même, les formes de « être »
-étant plus longues que celles de « avoir » (est / a, sont / ont,
-sommes / avons) :
-  - « aux_etre » : bonne phrase jamais la plus courte ; on y place les temps
-    où les deux auxiliaires ont la même longueur (était / avait,
-    seront / auront, êtes / avez) ;
-  - « aux_avoir » : bonne phrase la plus courte, sauf avec avait / était et
-    avez / êtes (longueurs égales).
-Il en va de même dans « forme_irreguliere », où la forme régularisée fautive
-est le plus souvent plus longue (« pris » / « *prendu ») : on y compense par
-les participes en -ert (« ouvert » / « *ouvri »), plus longs que la forme
-fautive, et par des formes de même longueur (« vécu » / « *vivé »). Les
-autres gabarits sont équilibrés à parts égales (masculin singulier attendu =
-bonne plus courte ; féminin ou pluriel attendu = bonne plus longue ;
-participe attendu = bonne plus courte ; infinitif attendu = bonne plus longue).
+Équilibre des longueurs (en caractères) : la bonne phrase est strictement la
+plus courte dans 33 paires sur 69 (47,8 %), la plus longue dans 24, de même
+longueur dans 12. Deux gabarits sont orientés par le phénomène lui-même, les
+formes de « être » étant le plus souvent plus longues que celles de « avoir »
+(est / a) :
+  - « aux_etre » : bonne phrase plus longue dans 5 paires sur 12 (est / a) ;
+    pour limiter cet indice, 6 paires utilisent des formes de même longueur
+    (était / avait, sera / aura, es / as, serait / aurait, fut / eut) et 1 a
+    la bonne phrase plus courte (être / avoir) ;
+  - « aux_avoir » : bonne phrase la plus courte dans 8 paires sur 12 (a / est),
+    de même longueur dans les 4 autres (as / es, avait / était, eut / fut,
+    aurait / serait).
+Dans « forme_irreguliere », la forme régularisée fautive est le plus souvent
+plus longue (« pris » / « *prendu ») : 6 paires sur 9 ont la bonne phrase plus
+courte, 2 ont des formes de même longueur (« vécu » / « *vivé »,
+« couru » / « *couri »), 1 a la bonne phrase plus longue (« ouvert » /
+« *ouvri »). Les autres gabarits sont équilibrés à parts égales (masculin
+singulier attendu = bonne plus courte ; féminin ou pluriel attendu = bonne
+plus longue ; participe en -é attendu = bonne plus courte ; participe en -ées
+attendu = bonne plus longue).
+
+Biais en nombre de tokens (à signaler lors de l'analyse) : dans
+« forme_irreguliere », la forme fautive est un non-mot que le tokeniseur BPE
+découpe en plus de morceaux que le participe existant ; la somme des
+log-probabilités pénalise alors la mauvaise phrase indépendamment de toute
+connaissance grammaticale. Ce gabarit est donc réduit à 9 paires (13 % du
+jeu) et ses scores doivent être lus à part. De façon générale, publier les
+scores PAR GABARIT (champ « gabarit ») plutôt que le seul score global.
 
 Module autonome : bibliothèque standard uniquement, aucun aléatoire.
 """
@@ -78,30 +108,37 @@ PHENOMENE = "participe_passe"
 # Gabarit -> liste de (cadre, forme correcte, forme fautive).
 # Le cadre contient exactement une case « {} ».
 GABARITS = {
-    # Auxiliaire « être » attendu, « avoir » fautif (verbes de mouvement ou
-    # de changement d'état, sans emploi transitif courant).
+    # Auxiliaire « être » attendu, « avoir » fautif. Sujet masculin singulier
+    # (aucun accord en jeu) ; verbes sans emploi attesté avec « avoir ».
     "aux_etre": [
         ("Le facteur {} arrivé ce matin.", "est", "a"),
         ("Mon oncle {} venu nous voir dimanche.", "est", "a"),
-        ("L'enfant {} tombé dans l'escalier.", "est", "a"),
+        ("Le vieux chien {} mort cet hiver.", "est", "a"),
         ("Victor Hugo {} né à Besançon.", "est", "a"),
         ("Son fils {} devenu médecin.", "est", "a"),
-        ("Les invités {} allés au jardin.", "sont", "ont"),
-        ("Le train {} parti depuis une heure.", "était", "avait"),
-        ("Ils {} revenus avant la nuit.", "seront", "auront"),
-        ("Vous {} arrivés trop tard.", "êtes", "avez"),
+        ("Mon cousin {} allé au jardin.", "était", "avait"),
+        ("Le train {} arrivé depuis une heure.", "était", "avait"),
+        ("Il {} revenu avant la nuit.", "sera", "aura"),
+        ("Tu {} venu trop tard.", "es", "as"),
+        ("Il {} mort sans ton aide.", "serait", "aurait"),
+        ("Après {} devenu roi, il oublia ses amis.", "être", "avoir"),
+        ("Dès qu'il {} revenu, la fête commença.", "fut", "eut"),
     ],
-    # Auxiliaire « avoir » attendu, « être » fautif.
+    # Auxiliaire « avoir » attendu, « être » fautif. Sujet masculin singulier :
+    # avec « être », le participe garderait la même forme (pas d'accord en jeu).
     "aux_avoir": [
         ("Il {} plu toute la nuit.", "a", "est"),
         ("Le chien {} aboyé contre les passants.", "a", "est"),
-        ("Les enfants {} dormi dans la grange.", "ont", "sont"),
-        ("Elle {} souri à son voisin.", "a", "est"),
-        ("Nous {} marché jusqu'au village.", "avons", "sommes"),
-        ("Vous {} beaucoup hésité avant de répondre.", "avez", "êtes"),
+        ("Le fermier {} dormi dans la grange.", "a", "est"),
+        ("Il {} souri à son voisin.", "a", "est"),
+        ("Le soldat {} marché jusqu'au village.", "a", "est"),
+        ("Tu {} beaucoup hésité avant de répondre.", "as", "es"),
         ("Le vieillard {} toussé toute la soirée.", "avait", "était"),
         ("Il {} neigé sur la montagne.", "a", "est"),
-        ("Ma sœur {} lu ce roman deux fois.", "a", "est"),
+        ("Le professeur {} lu ce roman deux fois.", "a", "est"),
+        ("Quand il {} dîné, il sortit.", "eut", "fut"),
+        ("Il {} ri de cette histoire.", "aurait", "serait"),
+        ("Ce roi {} régné quarante ans.", "a", "est"),
     ],
     # Accord en genre avec « être » (féminin attendu / masculin attendu).
     "accord_genre": [
@@ -143,34 +180,29 @@ GABARITS = {
         ("Les portes seront {} à minuit.", "fermées", "fermés"),
         ("Le repas est {} dans la grande salle.", "servi", "servis"),
     ],
-    # Participe irrégulier / forme régularisée inexistante.
+    # Participe irrégulier / forme régularisée inexistante (gabarit réduit :
+    # biais en nombre de tokens, voir la docstring).
     "forme_irreguliere": [
         ("Il a {} le train de nuit.", "pris", "prendu"),
         ("J'ai {} mes devoirs avant le dîner.", "fait", "faisé"),
         ("Elle a {} sa robe bleue.", "mis", "mettu"),
         ("Le notaire a {} une longue lettre.", "écrit", "écrivé"),
         ("Nous avons {} un verre d'eau.", "bu", "buvé"),
-        ("Tu as {} un joli tableau.", "peint", "peindu"),
         ("Elle a {} un bouquet de fleurs.", "reçu", "recevu"),
-        ("Le maître a {} la vérité.", "dit", "disé"),
         ("Le marchand a {} sa boutique.", "ouvert", "ouvri"),
-        ("Ma mère nous a {} des cadeaux.", "offert", "offri"),
-        ("Le peuple a beaucoup {} de la faim.", "souffert", "souffri"),
-        ("La neige a {} les champs.", "couvert", "couvri"),
         ("Ma grand-mère a {} à la campagne.", "vécu", "vivé"),
-        ("Le serpent a {} le berger.", "mordu", "mordi"),
+        ("Le garçon a {} jusqu'à la gare.", "couru", "couri"),
     ],
-    # Participe en -é (après l'auxiliaire) / infinitif en -er (après un
-    # semi-auxiliaire ou un verbe de volonté).
+    # Participe attendu après l'auxiliaire ; l'infinitif est fautif.
     "participe_infinitif": [
         ("Le renard a {} la poule.", "mangé", "manger"),
         ("Nous avons {} tout l'été.", "travaillé", "travailler"),
         ("Elle a {} la fenêtre.", "fermé", "fermer"),
         ("Le jardinier a {} les roses.", "coupé", "couper"),
-        ("Il faut {} la vaisselle.", "laver", "lavé"),
-        ("Je vais {} du pain.", "chercher", "cherché"),
-        ("Elle veut {} au directeur.", "parler", "parlé"),
-        ("Nous allons {} le château.", "visiter", "visité"),
+        ("Les fenêtres sont {} depuis hier.", "fermées", "fermer"),
+        ("Les cerises sont {} de l'arbre.", "tombées", "tomber"),
+        ("Les voisines sont {} nous voir.", "passées", "passer"),
+        ("Les lettres sont {} ce matin.", "arrivées", "arriver"),
     ],
 }
 
