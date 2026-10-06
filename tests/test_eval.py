@@ -237,7 +237,9 @@ def test_cli_eval_reports_errors(tmp_path, char_checkpoint):
 
 def test_cli_version():
     r = _popixa("--version", cwd=ROOT)
-    assert r.returncode == 0 and r.stdout.startswith("nanoPOPIXA ")
+    assert r.returncode == 0 and r.stdout.strip() == f"nanoPOPIXA {pe.popixa_version()}"
+    with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
+        assert f'version = "{pe.popixa_version()}"' in f.read()
 
 
 # ─── bench ───────────────────────────────────────────────────────────────────

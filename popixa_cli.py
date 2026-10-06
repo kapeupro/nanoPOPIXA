@@ -300,16 +300,20 @@ def cmd_eval(args):
 def cmd_bench(args):
     import json
     from popixa_eval import run_bench
+    if not 0.0 <= args.dropout < 1.0:
+        print(ERR_C + f"  ✗ --dropout doit être dans [0, 1) (reçu {args.dropout})" + R, file=sys.stderr)
+        sys.exit(1)
     print(INFO_C + f"  Benchmark preset {args.size} (≈ {args.seconds:.0f} s)…" + R, file=sys.stderr)
     r = run_bench(size=args.size, vocab_size=args.vocab, batch_size=args.batch,
-                  seconds=args.seconds)
+                  seconds=args.seconds, dropout=args.dropout)
     if args.json:
         print(json.dumps(r, indent=2, sort_keys=True))
         return
     print(CMD_C + f"  {r['size']} · {r['params'] / 1e6:.1f}M params · vocab {r['vocab_size']} · "
           f"{r['device']} · torch {r['torch']}" + R)
     print(f"  Entraînement : {r['train_tok_s']:,.0f} tokens/s  (batch {r['batch_size']} × "
-          f"{r['block_size']}, {r['train_steps']} pas) · {r['train_tflops']:.3f} TFLOPS effectifs")
+          f"{r['block_size']}, dropout {r['dropout']}, {r['train_steps']} pas) · "
+          f"{r['train_tflops']:.3f} TFLOPS effectifs")
     print(f"  Génération   : {r['gen_tok_s']:,.0f} tokens/s · speculative (n-grammes) "
           f"{r['gen_spec_tok_s']:,.0f} tokens/s")
     print(f"  Mémoire pic  : {r['peak_memory_mb']:,.0f} Mo")
@@ -410,6 +414,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--vocab",   type=int, default=50257)
     p_bench.add_argument("--batch",   type=int, default=4)
     p_bench.add_argument("--seconds", type=_positive_float, default=15.0)
+    p_bench.add_argument("--dropout", type=float, default=0.1,
+                         help="dropout pendant la mesure (0.1 = train.py ; 0 = sans dropout)")
     p_bench.add_argument("--json",    action="store_true")
 
     return parser

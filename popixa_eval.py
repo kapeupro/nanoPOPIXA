@@ -51,6 +51,15 @@ def _device() -> str:
 
 
 def popixa_version() -> str:
+    """Version du code exécuté : pyproject.toml du dépôt, sinon paquet installé, sinon « dev »."""
+    try:
+        import re
+        with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
+            m = re.search(r'^version\s*=\s*"([^"]+)"', f.read(), re.MULTILINE)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
     try:
         from importlib.metadata import version
         return version("nanopopixa")
@@ -362,10 +371,13 @@ def _sync(device: str) -> None:
 
 
 def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
-              seconds: float = 15.0, gen_tokens: int = 128, device: str = None, seed: int = 0) -> dict:
+              seconds: float = 15.0, gen_tokens: int = 128, device: str = None, seed: int = 0,
+              dropout: float = 0.1) -> dict:
     """
     Mesure le débit réel de la machine pour un preset (poids aléatoires, données aléatoires) :
-      - entraînement : tokens/s (forward + backward + pas AdamW), batch × block_size tokens par pas
+      - entraînement : tokens/s (forward + backward + pas AdamW), batch × block_size tokens par pas,
+        avec le dropout de train.py (0.1) : sur CPU/MPS, le dropout d'attention fait passer
+        scaled_dot_product_attention sur l'implémentation lente → mesurer la vraie configuration
       - génération   : tokens/s en décodage normal et en speculative decoding (drafts n-grammes)
       - mémoire pic, TFLOPS effectifs ≈ (6·N + 12·L·T·d) × tokens/s  (N = paramètres)
     """
@@ -374,7 +386,7 @@ def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
     device = device or _device()
     torch.manual_seed(seed)
     arch = SIZE_PRESETS[size]
-    cfg = POPIXAConfig(vocab_size=vocab_size, dropout=0.0, **arch)
+    cfg = POPIXAConfig(vocab_size=vocab_size, dropout=dropout, **arch)
     import contextlib
     with contextlib.redirect_stdout(sys.stderr):
         model = nanoPOPIXA(cfg).to(device)
@@ -431,6 +443,7 @@ def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
         "params":          n_params,
         "batch_size":      batch_size,
         "block_size":      T,
+        "dropout":         dropout,
         "train_steps":     steps,
         "train_tok_s":     round(train_tps, 1),
         "train_tflops":    round(train_tps * flops_per_token / 1e12, 4),
