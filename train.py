@@ -79,13 +79,18 @@ def _size_of(n_layer_: int, n_head_: int, n_embd_: int):
     return None
 
 
-# Taille effective : --size, sinon celle du checkpoint repris (un run medium lancé avec
-# l'ancien défaut garde ses hyperparamètres medium), sinon small
+# Réglages d'entraînement enregistrés par le dernier lancement (checkpoints ≥ 2.2)
+_saved = (resume_ckpt.get("train") or {}) if resume_ckpt is not None else {}
+if _saved.get("size") not in SIZE_PRESETS:
+    _saved = {}
+
+# Taille effective : --size, sinon celle enregistrée, sinon celle de l'architecture du checkpoint
+# (un run medium lancé avec l'ancien défaut garde ses hyperparamètres medium), sinon small
 size = args.size
 if size is None:
     if resume_ckpt is not None:
         _ck = resume_ckpt["config"]
-        size = _size_of(_ck.n_layer, _ck.n_head, _ck.n_embd) or "small"
+        size = _saved.get("size") or _size_of(_ck.n_layer, _ck.n_head, _ck.n_embd) or "small"
     else:
         size = "small"
 
@@ -101,9 +106,11 @@ _arch = SIZE_PRESETS[size]
 block_size, n_layer, n_head, n_embd = (_arch["block_size"], _arch["n_layer"],
                                        _arch["n_head"], _arch["n_embd"])
 batch_size, max_iters, learning_rate, warmup_iters = _TRAIN_PRESETS[size]
-# Reprise sans --size : réglages enregistrés par le run initial (ses --max_iters / --batch_size
-# compris) plutôt que ceux du preset — checkpoints antérieurs à 2.2 : preset de leur taille
-_saved = resume_ckpt.get("train") if resume_ckpt is not None and args.size is None else None
+# Reprise sans --size (ou avec la taille enregistrée) : réglages du dernier lancement, ses
+# --max_iters / --batch_size compris, plutôt que ceux du preset. Un --size différent applique
+# le preset de cette taille ; checkpoints antérieurs à 2.2 : preset de leur taille
+if _saved.get("size") != size:
+    _saved = {}
 if _saved:
     batch_size    = _saved.get("batch_size", batch_size)
     max_iters     = _saved.get("max_iters", max_iters)
@@ -146,7 +153,8 @@ if resume_ckpt is not None:
     ck = resume_ckpt["config"]
     ck_rope = getattr(ck, "rope_base", 10_000)
     if (ck.block_size, ck.n_layer, ck.n_head, ck.n_embd) != (block_size, n_layer, n_head, n_embd):
-        demande = f"--size {size}" if args.size else f"aucun preset (défaut {size})"
+        demande = (f"--size {size}" if args.size else
+                   f"réglages enregistrés ({size})" if _saved else f"aucun preset (défaut {size})")
         print(f"⚠️  Architecture du checkpoint (block {ck.block_size}, {ck.n_layer} couches, "
               f"{ck.n_head} têtes, embd {ck.n_embd}) ≠ {demande} → on garde le checkpoint "
               f"(hyperparamètres d'entraînement de {size})")

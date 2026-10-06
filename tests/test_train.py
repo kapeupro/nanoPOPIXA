@@ -94,8 +94,9 @@ def test_resume_without_size_keeps_checkpoint_size(tmp_path):
     ckpt = torch.load(str(tmp_path / "out-nanopopixa" / "checkpoint.pt"), weights_only=False)
     assert ckpt["train"]["size"] == "nano" and ckpt["train"]["max_iters"] == 2
     # Sans --max_iters : le run initial (2 itérations) est déjà terminé, pas 5 000 du preset
-    r = _train(tmp_path, "--resume", size=None)
-    assert r.returncode == 0 and "déjà terminé (2/2" in r.stdout, r.stdout + r.stderr
+    for size in (None, "nano"):                     # sans --size, ou avec la taille enregistrée
+        r = _train(tmp_path, "--resume", size=size)
+        assert r.returncode == 0 and "déjà terminé (2/2" in r.stdout, r.stdout + r.stderr
     r = _train(tmp_path, "--max_iters", "3", "--resume", size=None)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "[nano]" in r.stdout and "≠" not in r.stdout
