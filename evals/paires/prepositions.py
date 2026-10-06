@@ -47,10 +47,12 @@ agrammaticale, et non simplement ancienne, régionale ou défendable) :
     années folles », « du Paris d'autrefois » sont corrects avec un
     complément, et « le Paris » peut désigner un café, un navire ou un club ;
     le seul fautif employé devant une ville est « en » ;
-  - « France » est aussi un prénom (« Il a écrit à France ») : les verbes
-    des gabarits de lieu sont des verbes de séjour ou de déplacement
-    (habiter, vivre, partir...), jamais « écrire à », « parler à » ou
-    « voir en X » (« voir en Paris la capitale du monde » est correct) ;
+  - « France » est aussi un prénom (« Il a écrit à France ») : dans les
+    gabarits de lieu, la case est toujours un complément circonstanciel de
+    lieu (habiter, vivre, partir, se trouver, naître...), jamais après un
+    verbe à complément d'attribution (« écrire à », « parler à »,
+    « enseigner à ») ni après « voir en X » (« voir en Paris la capitale du
+    monde » est correct) ;
   - « à le » / « de les » ne sont fautifs que devant un nom : aucun
     infinitif ne suit (« Il pense à le faire », « Il décide de les voir »
     sont corrects) ;
@@ -143,7 +145,7 @@ GABARITS = {
         ("Ma cousine est partie vivre {} Japon.", "au", "en"),
         ("Le café pousse bien {} Brésil.", "au", "à"),
         ("Nous irons {} Mexique l'an prochain.", "au", "en"),
-        ("Elle enseigne le français {} Maroc.", "au", "à"),
+        ("Son neveu s'est installé {} Maroc.", "au", "à"),
         ("Il fait très froid l'hiver {} Canada.", "au", "à le"),
         ("Les explorateurs sont arrivés {} Pérou.", "au", "à le"),
         ("Mon voisin a longtemps vécu {} Sénégal.", "au", "en"),
