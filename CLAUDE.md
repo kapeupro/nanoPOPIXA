@@ -151,8 +151,9 @@ EFFORT_PRESETS = {
   (la CI vérifie avec `--check`) ; une seule différence par paire, longueurs équilibrées
 - **`popixa bench`** — tokens/s train (fwd+bwd+AdamW, dropout de train.py) et génération greedy,
   mémoire (nature indiquée : pic CUDA / driver MPS / RSS processus), TFLOPS ≈ (6N + 12·L·T·d) × tokens/s
-- **`train.py --resume`** sans `--size` → taille déduite du checkpoint (`_size_of`) ; garde MPS
-  testée sur l'architecture effective
+- **`train.py --resume`** sans `--size` → réglages enregistrés dans `ckpt["train"]` (size, batch,
+  max_iters, lr, warmup), sinon taille déduite de l'architecture (`_size_of`) ; garde MPS testée sur
+  l'architecture effective
 
 ## Ce qui reste à implémenter (backlog)
 

@@ -28,8 +28,9 @@ qu'elle fait mieux que celle-ci.
 
 ### Modifié
 - `popixa train` entraîne un modèle **`small`** par défaut (au lieu de `medium`, qui
-  dépassait la mémoire MPS des Mac Apple Silicon). `--resume` sans `--size` reprend la taille du
-  checkpoint (un run `medium` lancé en 2.1 garde ses hyperparamètres `medium`).
+  dépassait la mémoire MPS des Mac Apple Silicon). Le checkpoint enregistre ses réglages
+  d'entraînement : `--resume` sans option reprend le run tel quel (batch, LR, `max_iters`) ; un
+  checkpoint 2.1 reprend le preset de sa taille (un `medium` lancé en 2.1 reste `medium`).
 - `popixa prep` coupe train/val à 90 % du **texte** (avant tokenisation, au lieu de 90 % des
   tokens) : `val.bin` contient le même texte quel que soit le tokenizer, les bpb sont comparables.
   Données caractère inchangées ; données BPE à préparer de nouveau pour comparer.

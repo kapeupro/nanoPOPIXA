@@ -88,12 +88,17 @@ def test_seed_makes_training_reproducible(tmp_path):
 
 
 def test_resume_without_size_keeps_checkpoint_size(tmp_path):
-    """--resume sans --size : taille (et hyperparamètres) du checkpoint, pas le défaut small."""
+    """--resume sans --size : taille et réglages du run initial, pas le défaut small."""
     (tmp_path / "input.txt").write_text("abcdefgh " * 900, encoding="utf-8")
     assert _train(tmp_path, "--max_iters", "2").returncode == 0                  # nano
+    ckpt = torch.load(str(tmp_path / "out-nanopopixa" / "checkpoint.pt"), weights_only=False)
+    assert ckpt["train"]["size"] == "nano" and ckpt["train"]["max_iters"] == 2
+    # Sans --max_iters : le run initial (2 itérations) est déjà terminé, pas 5 000 du preset
+    r = _train(tmp_path, "--resume", size=None)
+    assert r.returncode == 0 and "déjà terminé (2/2" in r.stdout, r.stdout + r.stderr
     r = _train(tmp_path, "--max_iters", "3", "--resume", size=None)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "[nano]" in r.stdout and "≠ --size" not in r.stdout
+    assert "[nano]" in r.stdout and "≠" not in r.stdout
 
 
 def test_seed_out_of_numpy_range_is_accepted(tmp_path):

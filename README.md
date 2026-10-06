@@ -149,10 +149,11 @@ popixa train --data_dir data/ --resume          # reprendre depuis checkpoint
 popixa train --size nano --data_dir data/ --longrope   # rope_base=500k (la fenêtre reste block_size)
 ```
 
-> `--resume` reprend l'architecture du checkpoint et, sans `--size`, ses hyperparamètres
-> d'entraînement (batch, LR). Un `--size` explicite différent ne change que ces hyperparamètres
-> (signalé), un `--longrope` différent est signalé puis ignoré. Le modèle final est toujours
-> sauvegardé en fin d'entraînement.
+> `--resume` reprend l'architecture du checkpoint et ses réglages d'entraînement (batch, LR,
+> `max_iters`, y compris les `--batch_size` / `--max_iters` du premier lancement). Un `--size`,
+> `--batch_size` ou `--max_iters` passé à la reprise les remplace (un `--size` différent ne change
+> que les hyperparamètres, signalé) ; un `--longrope` différent est signalé puis ignoré. Checkpoints
+> antérieurs à 2.2 : preset de leur taille. Le modèle final est toujours sauvegardé en fin d'entraînement.
 
 ### Options chat
 

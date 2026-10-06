@@ -306,14 +306,19 @@ def cmd_eval(args):
         print(ERR_C + "  ✗ aucune tâche à évaluer (bpb demande --data_dir)" + R, file=sys.stderr)
         sys.exit(1)
     # Dossiers de sortie vérifiés AVANT l'évaluation (sinon les résultats sont perdus à la fin)
-    for opt, path in (("--out", args.out), ("--samples_out", args.samples_out if "samples" in tasks else None)):
+    samples_out = args.samples_out if "samples" in tasks else None
+    for opt, path in (("--out", args.out), ("--samples_out", samples_out)):
         if not path:
             continue
         d = os.path.dirname(os.path.abspath(path))
-        if os.path.isdir(path) or not os.path.isdir(d):
-            why = "est un dossier" if os.path.isdir(path) else f"dossier {d} introuvable"
+        is_dir = os.path.isdir(path) or not os.path.basename(path)       # « resultats/ » aussi
+        if is_dir or not os.path.isdir(d):
+            why = "désigne un dossier" if is_dir else f"dossier {d} introuvable"
             print(ERR_C + f"  ✗ {opt} {path} : {why}" + R, file=sys.stderr)
             sys.exit(1)
+    if args.out and samples_out and os.path.realpath(args.out) == os.path.realpath(samples_out):
+        print(ERR_C + f"  ✗ --out et --samples_out désignent le même fichier ({args.out})" + R, file=sys.stderr)
+        sys.exit(1)
     print(INFO_C + f"  Évaluation de {args.checkpoint}…" + R, file=sys.stderr)
     try:
         results, md = run_eval(
@@ -330,8 +335,8 @@ def cmd_eval(args):
     text = json.dumps(results, ensure_ascii=False, indent=2, sort_keys=True)
     ok = True
 
-    def write(path, content, fallback):
-        """Écrit un fichier de sortie ; en cas d'échec, le contenu part sur stdout (jamais perdu)."""
+    def write(path, content, fallback, stream):
+        """Écrit un fichier de sortie ; en cas d'échec, le contenu part sur `stream` (jamais perdu)."""
         nonlocal ok
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -339,16 +344,18 @@ def cmd_eval(args):
             print(INFO_C + f"  → {path}" + R, file=sys.stderr)
         except OSError as e:
             ok = False
-            print(ERR_C + f"  ✗ écriture de {path} impossible ({e}) : {fallback} sur la sortie standard"
-                  + R, file=sys.stderr)
-            print(content)
+            where = "la sortie standard" if stream is sys.stdout else "la sortie d'erreur"
+            print(ERR_C + f"  ✗ écriture de {path} impossible ({e}) : {fallback} sur {where}" + R,
+                  file=sys.stderr)
+            print(content, file=stream)
 
+    # stdout ne porte que le JSON des résultats ; le markdown de secours va sur stderr
     if args.out:
-        write(args.out, text + "\n", "résultats JSON")
+        write(args.out, text + "\n", "résultats JSON", sys.stdout)
     else:
         print(text)
     if md is not None and args.samples_out:
-        write(args.samples_out, md, "échantillons")
+        write(args.samples_out, md, "échantillons", sys.stderr)
     if not ok:
         sys.exit(1)
 

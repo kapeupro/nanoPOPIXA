@@ -111,7 +111,9 @@ def test_prep_splits_text_not_tokens(tmp_path):
     except Exception:
         pytest.skip("encodage gpt2 indisponible (hors ligne)")
     from data_prep import _tokenize_and_save
-    text = TEXT * 5
+    text = TEXT * 5 + "x" * 100                       # non périodique : coupe tokens ≠ coupe texte
+    toks = enc.encode_ordinary(text)
+    assert enc.decode(toks[int(len(toks) * 0.9):]) != text[int(len(text) * 0.9):]
     _tokenize_and_save(text, str(tmp_path / "c"), use_tiktoken=False)
     _tokenize_and_save(text, str(tmp_path / "g"), use_tiktoken=True)
     with open(tmp_path / "c" / "meta.pkl", "rb") as f:
@@ -366,7 +368,9 @@ def test_cli_eval_reports_errors(tmp_path, char_checkpoint):
     fails("--data_dir", str(tmp_path / "absent"), "--tasks", "bpb", msg="introuvable")
     fails("--tasks", "bpb", msg="aucune tâche")                                   # bpb sans --data_dir
     fails("--tasks", "paires", "--out", str(tmp_path / "absent" / "e.json"), msg="--out")
-    fails("--tasks", "paires", "--out", str(tmp_path), msg="est un dossier")
+    fails("--tasks", "paires", "--out", str(tmp_path), msg="désigne un dossier")
+    fails("--tasks", "paires", "--out", str(tmp_path / "nouveau") + "/", msg="désigne un dossier")
+    fails("--tasks", "samples", "--out", "s.md", "--samples_out", "./s.md", msg="même fichier")
     nometa = tmp_path / "nometa"
     nometa.mkdir()
     np.zeros(100, dtype=np.uint16).tofile(str(nometa / "val.bin"))

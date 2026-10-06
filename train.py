@@ -101,9 +101,17 @@ _arch = SIZE_PRESETS[size]
 block_size, n_layer, n_head, n_embd = (_arch["block_size"], _arch["n_layer"],
                                        _arch["n_head"], _arch["n_embd"])
 batch_size, max_iters, learning_rate, warmup_iters = _TRAIN_PRESETS[size]
+# Reprise sans --size : réglages enregistrés par le run initial (ses --max_iters / --batch_size
+# compris) plutôt que ceux du preset — checkpoints antérieurs à 2.2 : preset de leur taille
+_saved = resume_ckpt.get("train") if resume_ckpt is not None and args.size is None else None
+if _saved:
+    batch_size    = _saved.get("batch_size", batch_size)
+    max_iters     = _saved.get("max_iters", max_iters)
+    learning_rate = _saved.get("learning_rate", learning_rate)
+    warmup_iters  = _saved.get("warmup_iters", warmup_iters)
 if args.max_iters is not None:
     max_iters    = max(1, args.max_iters)
-    warmup_iters = min(warmup_iters, max(1, max_iters // 10))
+    warmup_iters = min(_TRAIN_PRESETS[size][3], max(1, max_iters // 10))
 if args.batch_size is not None:
     batch_size = max(1, args.batch_size)
 
@@ -162,8 +170,8 @@ if (device == "mps" and _size_of(n_layer, n_head, n_embd) == "medium"
         print("   nouvel entraînement (sans --resume) avec --size small (~3 GB) ou --size nano.")
     else:
         print("   Recommandation : utilise --size small (~10M params, ~3 GB) ou --size nano (~0.9M params).")
-    print("   Tu peux aussi réduire le batch en éditant batch_size dans train.py.")
-    print("   Pour forcer quand même : relance avec PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 popixa train ...")
+    print("   Pour forcer quand même (de préférence avec un batch réduit, la garde ne regarde pas le batch) :")
+    print("   PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 popixa train ... --batch_size 2")
     sys.exit(1)
 
 
@@ -346,6 +354,9 @@ def save_checkpoint(it: int) -> None:
         "iter":      it,
         "tokenizer": meta.get("tokenizer", "char"),
         "data_dir":  args.data_dir,
+        # Réglages d'entraînement : --resume sans options les reprend tels quels
+        "train":     {"size": size, "batch_size": batch_size, "max_iters": max_iters,
+                      "learning_rate": learning_rate, "warmup_iters": warmup_iters},
     }
     if meta.get("tokenizer") != "tiktoken_gpt2":
         checkpoint["vocab"] = {"stoi": stoi, "itos": itos}
