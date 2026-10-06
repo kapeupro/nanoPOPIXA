@@ -35,7 +35,7 @@ Gabarits (identifiant court dans le champ « gabarit ») :
         « Ma tante vit en France ... » / « *... à France ... »
         « ... un long voyage en Italie. » / « *... au Italie. »
   - pays_masculin : « au » devant un pays masculin commençant par une consonne
-        « Ma cousine est partie vivre au Japon. » / « *... en Japon. »
+        « Ma cousine est partie vivre au Japon. » / « *... à le Japon. »
   - pays_pluriel : « aux » devant un nom de lieu pluriel (pays, archipels,
     et « les Indes » des textes classiques)
         « Ma sœur fait ses études aux États-Unis. » / « *... en États-Unis. »
@@ -45,7 +45,7 @@ Gabarits (identifiant court dans le champ « gabarit ») :
 
 Indices de surface :
   - les suites « à le », « à les », « de le », « de les » figurent dans
-    18 mauvaises phrases (article non contracté devant un nom de chose ou
+    19 mauvaises phrases (article non contracté devant un nom de chose ou
     de pays) mais aussi dans 12 bonnes phrases (gabarit pronom_infinitif),
     dont les mauvaises phrases portent au contraire « au », « aux », « du »
     ou « des » devant un infinitif. Un modèle qui pénalise simplement le
@@ -88,12 +88,9 @@ défendable) :
     toujours un complément circonstanciel de lieu (habiter, vivre, partir,
     se trouver, naître...), jamais après un verbe à complément
     d'attribution (« écrire à », « parler à ») ni après « voir en X » ;
-  - pas de « en » fautif devant Portugal, Danemark ou Canada (« en
-    Portugal », « en Canada » se lisent chez les classiques) ; « en »
-    fautif devant un pays masculin n'est employé que pour « Japon »,
-    exemple imposé par la consigne : « en Japon » se rencontre dans
-    quelques textes anciens, mais il est nettement agrammatical en français
-    moderne ;
+  - jamais « en » fautif devant un pays masculin (« en Portugal », « en
+    Danemark », « en Canada », « en Japon » se lisent chez les classiques) :
+    la forme fautive y est « à » ou « à le » ;
   - pas d'île sans article (« à Cuba », « à Malte », « à Chypre » sont
     corrects).
 
@@ -107,10 +104,10 @@ contraction devant une voyelle.
 
 Équilibre des longueurs (69 paires) :
   - en caractères : bonne phrase strictement plus courte dans 31 paires
-    (44,9 %), plus longue dans 30, de même longueur dans 8 ;
+    (46,4 %), plus longue dans 30, de même longueur dans 7 ;
   - en tokens gpt2 (le tokenizer du projet ; le score est une somme de
-    log-probabilités par token) : bonne phrase plus courte dans 18 paires,
-    plus longue dans 23, de même longueur dans 28. « à », « en », « au »,
+    log-probabilités par token) : bonne phrase plus courte dans 19 paires,
+    plus longue dans 23, de même longueur dans 27. « à », « en », « au »,
     « aux », « du », « de », « des » font chacun un token, « à le » ou
     « de les » deux, et une forme élidée (« à l'arbre », « d'Iran ») coûte
     plus de tokens que « au arbre » ou « du Iran ».
@@ -125,7 +122,7 @@ Répartition par gabarit (caractères, puis tokens ; courte/longue/égale) :
   - ville 9/0/0 puis 0/0/9 : « à » contre « en », imposé par le phénomène
     (un caractère d'écart, même nombre de tokens) ;
   - pays_feminin 0/3/5 puis 0/0/8 : « en » contre « à » ou « au » ;
-  - pays_masculin 3/3/1 puis 3/0/4, pays_pluriel 2/4/0 puis 2/0/4,
+  - pays_masculin 4/3/0 puis 4/0/3, pays_pluriel 2/4/0 puis 2/0/4,
     provenance 6/1/2 puis 2/4/3 : la forme fautive varie (« en », « à »,
     « à le », « de », « du ») pour mêler les cas.
 
@@ -208,7 +205,7 @@ GABARITS = {
     ],
     # Pays masculin à initiale consonantique : « au ».
     "pays_masculin": [
-        ("Ma cousine est partie vivre {} Japon.", "au", "en"),
+        ("Ma cousine est partie vivre {} Japon.", "au", "à le"),
         ("Le café pousse bien {} Brésil.", "au", "à"),
         ("Son neveu s'est installé {} Liban.", "au", "à"),
         ("Il fait très froid l'hiver {} Canada.", "au", "à le"),

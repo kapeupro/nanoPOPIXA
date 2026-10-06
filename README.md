@@ -93,7 +93,6 @@ Dépendances : `torch >= 2.0`, `numpy`, `tiktoken`
 popixa prep --dataset shakespeare
 
 # 2. Entraîner un modèle nano (~0.9M params hors embeddings)
-#    CPU : ~10-15 min  |  Apple Silicon MPS : ~3-5 min  |  GPU CUDA : ~1-2 min
 popixa train --size nano --data_dir data/
 
 # 3. Discuter avec le modèle
@@ -101,7 +100,19 @@ popixa chat
 ```
 
 Le modèle `nano` suffit pour tester toutes les fonctionnalités. Sans `--size`, `popixa train`
-entraîne un `small` (~10M params, ~3× plus long) : meilleure qualité de génération.
+entraîne un `small` (~10M params) : meilleure qualité de génération, mais ≈ 10× moins de tokens/s.
+
+**Durée** : `popixa bench --size nano` mesure le débit de TA machine et estime le temps
+d'entraînement. Repère mesuré sur un CPU 4 cœurs : un `nano` caractère fait 1 000 itérations
+(batch 16) en ~26 min — le preset complet (5 000 itérations, batch 32) prend plusieurs heures sur
+CPU ; un GPU ou Apple Silicon va beaucoup plus vite. Premier essai rapide sur CPU :
+
+```bash
+popixa prep --dataset hugo --char --data_dir data_hugo
+popixa train --size nano --data_dir data_hugo --max_iters 1000 --batch_size 16
+```
+
+Chiffres de référence (bpb, paires, débit) : [`evals/BASELINES.md`](evals/BASELINES.md).
 
 > **Apple Silicon (M1/M2/M3/M4)** : `--size medium` dépasse les 20 GB de mémoire MPS et plantera. Reste sur `nano` ou `small`.
 

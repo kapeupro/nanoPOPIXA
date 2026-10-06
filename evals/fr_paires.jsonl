@@ -320,7 +320,7 @@
 {"bad": "On cultive beaucoup de riz au Chine.", "gabarit": "pays_feminin", "good": "On cultive beaucoup de riz en Chine.", "phenomene": "prepositions"}
 {"bad": "Le poète anglais est mort au Grèce.", "gabarit": "pays_feminin", "good": "Le poète anglais est mort en Grèce.", "phenomene": "prepositions"}
 {"bad": "Il a vécu longtemps au Suède.", "gabarit": "pays_feminin", "good": "Il a vécu longtemps en Suède.", "phenomene": "prepositions"}
-{"bad": "Ma cousine est partie vivre en Japon.", "gabarit": "pays_masculin", "good": "Ma cousine est partie vivre au Japon.", "phenomene": "prepositions"}
+{"bad": "Ma cousine est partie vivre à le Japon.", "gabarit": "pays_masculin", "good": "Ma cousine est partie vivre au Japon.", "phenomene": "prepositions"}
 {"bad": "Le café pousse bien à Brésil.", "gabarit": "pays_masculin", "good": "Le café pousse bien au Brésil.", "phenomene": "prepositions"}
 {"bad": "Son neveu s'est installé à Liban.", "gabarit": "pays_masculin", "good": "Son neveu s'est installé au Liban.", "phenomene": "prepositions"}
 {"bad": "Il fait très froid l'hiver à le Canada.", "gabarit": "pays_masculin", "good": "Il fait très froid l'hiver au Canada.", "phenomene": "prepositions"}

@@ -136,6 +136,7 @@ def test_eval_pairs_scores_and_skips_out_of_vocabulary(tmp_path):
     assert r["n"] == 4 and r["non_couvertes"] == 1
     assert set(r["par_phenomene"]) == {"accord_sujet_verbe", "participe_passe", "elision"}
     assert 0.0 <= r["accuracy"] <= 1.0
+    assert r["ic95"][0] <= r["accuracy"] <= r["ic95"][1]
     # Baseline longueur : « dort » < « dorment », « dorment » > « dort », « partie » > « parti »,
     # « l'aime » < « le aime » → 2 sur 4
     assert r["baseline_longueur"] == 0.5
@@ -185,6 +186,13 @@ def test_samples_are_deterministic():
     assert pe.eval_samples(model, encode, decode, prompts[:3], n_tokens=12, seed=8)[1] != rows
     md = pe.samples_markdown(rows, summary, "ckpt.pt")
     assert md.count("```text") == 3 and prompts[0] in md
+
+
+def test_wilson_interval():
+    assert pe.wilson_ic95(0, 0) is None
+    lo, hi = pe.wilson_ic95(208, 338)                    # 61.5 % sur 338 paires
+    assert 0.56 < lo < 0.57 and 0.66 < hi < 0.67
+    assert pe.wilson_ic95(0, 10)[0] == 0.0 and pe.wilson_ic95(10, 10)[1] == 1.0
 
 
 def test_distinct2():

@@ -11,8 +11,9 @@ qu'elle fait mieux que celle-ci.
 - **`popixa eval`** — évaluation déterministe d'un checkpoint, résultats dans `eval.json`
   (sans date ni durée : même checkpoint → même fichier) :
   - `bpb` : bits par octet sur `val.bin`, comparable entre tokenizers (caractère, BPE) ;
-  - `paires` : paires minimales françaises (accord sujet-verbe, accord nominal, participe
-    passé, élision, prépositions), score comparé à une baseline « phrase la plus courte » ;
+  - `paires` : 344 paires minimales françaises (accord sujet-verbe, accord nominal, participe
+    passé, élision, prépositions), score avec intervalle de confiance à 95 %, comparé à une
+    baseline « phrase la plus courte » ;
   - `samples` : 20 amorces françaises à graine fixe → `samples.md`, distinct-2 et taux de
     sorties répétitives.
 - **`evals/`** — jeu de paires minimales `fr_paires.jsonl`, reconstruit et vérifié par
@@ -27,6 +28,8 @@ qu'elle fait mieux que celle-ci.
 ### Modifié
 - `popixa train` entraîne un modèle **`small`** par défaut (au lieu de `medium`, qui
   dépassait la mémoire MPS des Mac Apple Silicon).
+- README : les durées d'entraînement annoncées (« nano : 10-15 min sur CPU ») étaient fausses ;
+  remplacées par la mesure (`popixa bench`, `evals/BASELINES.md`).
 - Les presets d'architecture sont partagés (`model.SIZE_PRESETS`) entre `train.py` et
   `popixa bench`.
 

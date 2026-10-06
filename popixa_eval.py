@@ -172,12 +172,24 @@ def sequence_logprob(model, prefix_ids: list, ids: list, device: str = "cpu") ->
     return float(picked[-n_target:].sum())
 
 
+def wilson_ic95(k: int, n: int) -> list:
+    """Intervalle de confiance à 95 % (Wilson) d'une proportion k/n : deux scores dont les
+    intervalles se recouvrent largement ne sont pas significativement différents."""
+    if n == 0:
+        return None
+    z, p = 1.96, k / n
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    marge = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    return [round(max(0.0, centre - marge), 4), round(min(1.0, centre + marge), 4)]
+
+
 def eval_pairs(model, encode, ckpt: dict, pairs: list, device: str = "cpu") -> dict:
     """
     Score = % de paires où log P(bonne) > log P(mauvaise) (sommes de log-probabilités,
     méthode BLiMP), avec la même amorce « \\n » (début de ligne) pour les deux phrases.
     baseline_longueur : score d'un « modèle » qui préfère toujours la phrase la plus courte
     en tokens — un vrai modèle doit faire nettement mieux.
+    ic95 : intervalle de confiance à 95 % de accuracy (≈ ± 5 points pour ~340 paires).
     """
     model.train(False)
     prefix = encode("\n") or [0]
@@ -200,6 +212,7 @@ def eval_pairs(model, encode, ckpt: dict, pairs: list, device: str = "cpu") -> d
         "n":                 n_total,
         "non_couvertes":     n_skip,
         "accuracy":          round(n_ok / n_total, 4) if n_total else None,
+        "ic95":              wilson_ic95(n_ok, n_total),
         "baseline_longueur": round(shorter / n_total, 4) if n_total else None,
         "par_phenomene":     {k: {"accuracy": round(v[0] / v[1], 4), "n": v[1]}
                               for k, v in sorted(per.items())},
@@ -325,7 +338,8 @@ def run_eval(checkpoint: str, data_dir: str = None, split: str = "val", tasks=TA
         res = eval_pairs(model, encode, ckpt, load_pairs(pairs_path), device)
         results["tasks"]["paires"] = res
         detail = "  ".join(f"{k} {v['accuracy']:.0%}" for k, v in res["par_phenomene"].items())
-        acc = f"{res['accuracy']:.1%}" if res["accuracy"] is not None else "—"
+        acc = (f"{res['accuracy']:.1%} [{res['ic95'][0]:.1%}–{res['ic95'][1]:.1%}]"
+               if res["accuracy"] is not None else "—")
         base = f"{res['baseline_longueur']:.1%}" if res["baseline_longueur"] is not None else "—"
         log(f"  paires   {acc}  (baseline longueur {base}) · {res['n']} paires"
             + (f", {res['non_couvertes']} hors vocabulaire" if res["non_couvertes"] else "")
