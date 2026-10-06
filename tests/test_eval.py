@@ -98,6 +98,27 @@ def test_max_bytes_selects_same_text_for_any_tokenizer():
                       np.array(enc.encode_ordinary(TEXT), dtype=np.uint16), gpt_nb, max_bytes=300)
     assert r_c["bytes"] == 300 and 290 <= r_g["bytes"] <= 300          # frontière de token BPE
     assert r_g["tokens"] < r_c["tokens"]
+    with pytest.raises(ValueError, match="vocabulaire"):              # contrôle avant d'indexer nbytes
+        pe.eval_bpb(make_model(block_size=64, vocab_size=len(CHARS)),
+                    np.array([1, 2, 500, 3], dtype=np.uint16), char_nb, max_bytes=10)
+
+
+def test_prep_splits_text_not_tokens(tmp_path):
+    """popixa prep : val.bin contient le même texte en caractère et en BPE (bpb comparables)."""
+    tiktoken = pytest.importorskip("tiktoken")
+    try:
+        enc = tiktoken.get_encoding("gpt2")
+    except Exception:
+        pytest.skip("encodage gpt2 indisponible (hors ligne)")
+    from data_prep import _tokenize_and_save
+    text = TEXT * 5
+    _tokenize_and_save(text, str(tmp_path / "c"), use_tiktoken=False)
+    _tokenize_and_save(text, str(tmp_path / "g"), use_tiktoken=True)
+    with open(tmp_path / "c" / "meta.pkl", "rb") as f:
+        itos = pickle.load(f)["itos"]
+    val_c = "".join(itos[int(i)] for i in np.fromfile(str(tmp_path / "c" / "val.bin"), dtype=np.uint16))
+    val_g = enc.decode(np.fromfile(str(tmp_path / "g" / "val.bin"), dtype=np.uint16).tolist())
+    assert val_c == val_g == text[int(len(text) * 0.9):]
 
 
 def test_bpb_denominator_is_tokenizer_independent():
@@ -226,6 +247,15 @@ def test_pairs_and_prompts_files_are_validated(tmp_path):
         pe.load_prompts(str(empty))
 
 
+def test_run_eval_validates_inputs_before_any_pass(tmp_path):
+    """Un fichier d'amorces invalide est signalé avant de charger le modèle et de calculer le bpb."""
+    empty = tmp_path / "a.txt"
+    empty.write_text("# rien\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="aucune amorce"):            # checkpoint absent : jamais chargé
+        pe.run_eval(str(tmp_path / "absent.pt"), data_dir=str(tmp_path), prompts_path=str(empty),
+                    device="cpu", log=lambda m: None)
+
+
 def test_weights_fingerprint_depends_on_weights_only(tmp_path, char_checkpoint):
     """Mêmes poids → même empreinte, même copiés ailleurs ; poids différents → empreinte différente."""
     import shutil
@@ -336,6 +366,7 @@ def test_cli_eval_reports_errors(tmp_path, char_checkpoint):
     fails("--data_dir", str(tmp_path / "absent"), "--tasks", "bpb", msg="introuvable")
     fails("--tasks", "bpb", msg="aucune tâche")                                   # bpb sans --data_dir
     fails("--tasks", "paires", "--out", str(tmp_path / "absent" / "e.json"), msg="--out")
+    fails("--tasks", "paires", "--out", str(tmp_path), msg="est un dossier")
     nometa = tmp_path / "nometa"
     nometa.mkdir()
     np.zeros(100, dtype=np.uint16).tofile(str(nometa / "val.bin"))

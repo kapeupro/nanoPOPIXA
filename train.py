@@ -138,8 +138,9 @@ if resume_ckpt is not None:
     ck = resume_ckpt["config"]
     ck_rope = getattr(ck, "rope_base", 10_000)
     if (ck.block_size, ck.n_layer, ck.n_head, ck.n_embd) != (block_size, n_layer, n_head, n_embd):
+        demande = f"--size {size}" if args.size else f"aucun preset (défaut {size})"
         print(f"⚠️  Architecture du checkpoint (block {ck.block_size}, {ck.n_layer} couches, "
-              f"{ck.n_head} têtes, embd {ck.n_embd}) ≠ --size {size} → on garde le checkpoint "
+              f"{ck.n_head} têtes, embd {ck.n_embd}) ≠ {demande} → on garde le checkpoint "
               f"(hyperparamètres d'entraînement de {size})")
     if ck_rope != rope_base:
         print(f"⚠️  rope_base du checkpoint ({ck_rope}) ≠ demandé ({rope_base}) → on garde le checkpoint")
@@ -155,8 +156,12 @@ if resume_ckpt is not None:
 # Testée sur l'architecture EFFECTIVE (un checkpoint medium repris compte aussi)
 if (device == "mps" and _size_of(n_layer, n_head, n_embd) == "medium"
         and "PYTORCH_MPS_HIGH_WATERMARK_RATIO" not in os.environ):
-    print("⚠️  Attention : --size medium peut provoquer un OOM sur Apple Silicon (>20 GB MPS).")
-    print("   Recommandation : utilise --size small (~10M params, ~3 GB) ou --size nano (~0.9M params).")
+    print("⚠️  Attention : un modèle medium peut provoquer un OOM sur Apple Silicon (>20 GB MPS).")
+    if resume_ckpt is not None:
+        print("   Le checkpoint repris est medium : --size ne change pas son architecture. Recommandation :")
+        print("   nouvel entraînement (sans --resume) avec --size small (~3 GB) ou --size nano.")
+    else:
+        print("   Recommandation : utilise --size small (~10M params, ~3 GB) ou --size nano (~0.9M params).")
     print("   Tu peux aussi réduire le batch en éditant batch_size dans train.py.")
     print("   Pour forcer quand même : relance avec PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 popixa train ...")
     sys.exit(1)

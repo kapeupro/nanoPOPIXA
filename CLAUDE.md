@@ -145,6 +145,8 @@ EFFORT_PRESETS = {
   - `samples` = 20 amorces × 128 tokens, graine `seed + i`, `stop_policy="off"`, distinct-2 + drapeaux
     répétitifs (None si trop court pour le détecteur), amorces altérées par le tokenizer signalées
   - empreinte = sha256 des poids (`weights_fingerprint`), pas du fichier ; IC 95 % (Wilson) sur les paires
+- **`popixa prep`** coupe train/val à 90 % du TEXTE avant tokenisation → même `val.bin` (en texte)
+  pour char et BPE ; `popixa eval --max_bytes N` = même extrait pour tous les tokenizers
 - **Paires** : modifier `evals/paires/<phénomène>.py` puis `python evals/build_paires.py`
   (la CI vérifie avec `--check`) ; une seule différence par paire, longueurs équilibrées
 - **`popixa bench`** — tokens/s train (fwd+bwd+AdamW, dropout de train.py) et génération greedy,

@@ -307,9 +307,12 @@ def cmd_eval(args):
         sys.exit(1)
     # Dossiers de sortie vérifiés AVANT l'évaluation (sinon les résultats sont perdus à la fin)
     for opt, path in (("--out", args.out), ("--samples_out", args.samples_out if "samples" in tasks else None)):
-        d = os.path.dirname(os.path.abspath(path)) if path else None
-        if d and not os.path.isdir(d):
-            print(ERR_C + f"  ✗ {opt} : dossier {d} introuvable" + R, file=sys.stderr)
+        if not path:
+            continue
+        d = os.path.dirname(os.path.abspath(path))
+        if os.path.isdir(path) or not os.path.isdir(d):
+            why = "est un dossier" if os.path.isdir(path) else f"dossier {d} introuvable"
+            print(ERR_C + f"  ✗ {opt} {path} : {why}" + R, file=sys.stderr)
             sys.exit(1)
     print(INFO_C + f"  Évaluation de {args.checkpoint}…" + R, file=sys.stderr)
     try:
@@ -325,21 +328,28 @@ def cmd_eval(args):
         print(ERR_C + f"  ✗ {e}" + R, file=sys.stderr)
         sys.exit(1)
     text = json.dumps(results, ensure_ascii=False, indent=2, sort_keys=True)
-    try:
-        if args.out:
-            with open(args.out, "w", encoding="utf-8") as f:
-                f.write(text + "\n")
-            print(INFO_C + f"  → {args.out}" + R, file=sys.stderr)
-        else:
-            print(text)
-        if md is not None and args.samples_out:
-            with open(args.samples_out, "w", encoding="utf-8") as f:
-                f.write(md)
-            print(INFO_C + f"  → {args.samples_out}" + R, file=sys.stderr)
-    except OSError as e:
-        if args.out:
-            print(text)                     # résultats jamais perdus : sur stdout en dernier recours
-        print(ERR_C + f"  ✗ écriture impossible : {e}" + R, file=sys.stderr)
+    ok = True
+
+    def write(path, content, fallback):
+        """Écrit un fichier de sortie ; en cas d'échec, le contenu part sur stdout (jamais perdu)."""
+        nonlocal ok
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            print(INFO_C + f"  → {path}" + R, file=sys.stderr)
+        except OSError as e:
+            ok = False
+            print(ERR_C + f"  ✗ écriture de {path} impossible ({e}) : {fallback} sur la sortie standard"
+                  + R, file=sys.stderr)
+            print(content)
+
+    if args.out:
+        write(args.out, text + "\n", "résultats JSON")
+    else:
+        print(text)
+    if md is not None and args.samples_out:
+        write(args.samples_out, md, "échantillons")
+    if not ok:
         sys.exit(1)
 
 
@@ -446,8 +456,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--tasks",      default="bpb,paires,samples",
                         help="Liste parmi bpb,paires,samples (bpb ignorée sans --data_dir)")
     p_eval.add_argument("--max_bytes",  type=_positive_int, default=None,
-                        help="bpb sur les N premiers octets de texte seulement (même extrait quel que soit "
-                             "le tokenizer : bpb comparables)")
+                        help="bpb sur les N premiers octets de texte seulement (même extrait, à un token "
+                             "près, quel que soit le tokenizer : bpb comparables)")
     p_eval.add_argument("--out",        default=None, help="Fichier JSON (sinon stdout)")
     p_eval.add_argument("--samples_out", default="samples.md")
     p_eval.add_argument("--samples_tokens", type=_positive_int, default=128,

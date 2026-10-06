@@ -114,22 +114,26 @@ def eval_bpb(model, data: np.ndarray, nbytes: np.ndarray, max_tokens: int = None
     fois ; le dénominateur en octets est la somme exacte des octets des tokens prédits
     (indépendant des frontières de fenêtres et du tokenizer).
     max_bytes : ne prédire que les tokens couvrant les max_bytes premiers octets de texte →
-    même extrait pour tous les tokenizers (bpb comparables) ; max_tokens : plafond en tokens.
+    même extrait (à un token près) pour tous les tokenizers, puisque popixa prep coupe val.bin
+    au même endroit du texte (bpb comparables) ; max_tokens : plafond en tokens.
     """
     block = model.config.block_size
     n_pred = len(data) - 1
     if max_tokens is not None:
         n_pred = min(n_pred, max_tokens)
     if max_bytes is not None:
-        # chaque token fait ≥ 1 octet (sauf tokens spéciaux, rares) → max_bytes tokens suffisent
-        cum = np.cumsum(nbytes[data[1:1 + min(n_pred, max_bytes)].astype(np.int64)])
-        n_pred = int(np.searchsorted(cum, max_bytes, side="right"))
+        n_pred = min(n_pred, max_bytes)      # chaque token fait ≥ 1 octet (sauf tokens spéciaux, rares)
     if n_pred <= 0:
         raise ValueError("pas assez de tokens pour évaluer")
     top = int(data[:n_pred + 1].max())
-    if top >= model.config.vocab_size:
+    if top >= min(model.config.vocab_size, len(nbytes)):
         raise ValueError(f"id de token {top} ≥ vocabulaire du modèle ({model.config.vocab_size}) : "
                          "données préparées avec un autre tokenizer")
+    if max_bytes is not None:
+        cum = np.cumsum(nbytes[data[1:1 + n_pred].astype(np.int64)])
+        n_pred = int(np.searchsorted(cum, max_bytes, side="right"))
+        if n_pred <= 0:
+            raise ValueError("--max_bytes trop petit : aucun token entier")
 
     n_full, rest = divmod(n_pred, block)
     # Fenêtres pleines regroupées en batch, puis la fenêtre partielle finale seule
@@ -372,10 +376,14 @@ def run_eval(checkpoint: str, data_dir: str = None, split: str = "val", tasks=TA
         raise ValueError(f"tâche(s) inconnue(s) : {', '.join(unknown)} ({', '.join(TASKS)})")
     if "bpb" in tasks and not data_dir:
         raise ValueError("la tâche bpb demande --data_dir (val.bin)")
+    # Fichiers d'entrée validés AVANT toute passe : une erreur après le bpb perdrait ses résultats
+    pairs = load_pairs(pairs_path) if "paires" in tasks else None
+    prompts = load_prompts(prompts_path) if "samples" in tasks else None
 
     device = device or _device()
     with contextlib.redirect_stdout(sys.stderr):
         model, encode, decode, ckpt = load_model(checkpoint, device)
+    data = load_split(data_dir, split, ckpt) if "bpb" in tasks else None
 
     results = {
         "popixa_version": popixa_version(),
@@ -394,7 +402,6 @@ def run_eval(checkpoint: str, data_dir: str = None, split: str = "val", tasks=TA
 
     if "bpb" in tasks:
         t0 = time.time()
-        data = load_split(data_dir, split, ckpt)
         res = eval_bpb(model, data, token_nbytes(ckpt, model.config.vocab_size),
                        max_tokens=max_tokens, max_bytes=max_bytes, device=device)
         res["split"] = split
@@ -404,7 +411,7 @@ def run_eval(checkpoint: str, data_dir: str = None, split: str = "val", tasks=TA
 
     if "paires" in tasks:
         t0 = time.time()
-        res = eval_pairs(model, encode, ckpt, load_pairs(pairs_path), device)
+        res = eval_pairs(model, encode, ckpt, pairs, device)
         results["tasks"]["paires"] = res
         detail = "  ".join(f"{k} {v['accuracy']:.0%}" for k, v in res["par_phenomene"].items())
         acc = (f"{res['accuracy']:.1%} [{res['ic95'][0]:.1%}–{res['ic95'][1]:.1%}]"
@@ -418,7 +425,7 @@ def run_eval(checkpoint: str, data_dir: str = None, split: str = "val", tasks=TA
 
     if "samples" in tasks:
         t0 = time.time()
-        summary, rows = eval_samples(model, encode, decode, load_prompts(prompts_path),
+        summary, rows = eval_samples(model, encode, decode, prompts,
                                      n_tokens=samples_tokens, seed=seed, device=device)
         results["tasks"]["samples"] = summary
         md = samples_markdown(rows, summary, os.path.basename(checkpoint))
@@ -449,7 +456,7 @@ def _peak_memory(device: str) -> tuple:
         import resource
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         rss = rss if sys.platform == "darwin" else rss * 1024        # octets sur macOS, Ko sur Linux
-        return int(rss), "RSS max du processus, torch compris"
+        return int(rss), "RSS max du processus : torch et commandes précédentes du shell compris"
     except ImportError:
         return 0, "indisponible"
 

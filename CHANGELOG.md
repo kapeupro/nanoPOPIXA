@@ -11,7 +11,7 @@ qu'elle fait mieux que celle-ci.
 - **`popixa eval`** — évaluation déterministe d'un checkpoint, résultats dans `eval.json`
   (sans date ni durée, empreinte calculée sur les poids : mêmes poids → même fichier) :
   - `bpb` : bits par octet sur `val.bin`, comparable entre tokenizers (caractère, BPE) ;
-    `--max_bytes` évalue un extrait de même taille en octets quel que soit le tokenizer ;
+    `--max_bytes` évalue le même extrait de texte (à un token près) quel que soit le tokenizer ;
   - `paires` : 344 paires minimales françaises (accord sujet-verbe, accord nominal, participe
     passé, élision, prépositions), score avec intervalle de confiance à 95 %, comparé à une
     baseline « phrase la plus courte » ;
@@ -30,14 +30,17 @@ qu'elle fait mieux que celle-ci.
 - `popixa train` entraîne un modèle **`small`** par défaut (au lieu de `medium`, qui
   dépassait la mémoire MPS des Mac Apple Silicon). `--resume` sans `--size` reprend la taille du
   checkpoint (un run `medium` lancé en 2.1 garde ses hyperparamètres `medium`).
-
-### Mise à jour depuis 2.1
-- Installation éditable : après `git pull`, relance `pip install -e .` (ou `popixa update`) pour
-  que la commande `popixa` connaisse les nouveaux modules.
+- `popixa prep` coupe train/val à 90 % du **texte** (avant tokenisation, au lieu de 90 % des
+  tokens) : `val.bin` contient le même texte quel que soit le tokenizer, les bpb sont comparables.
+  Données caractère inchangées ; données BPE à préparer de nouveau pour comparer.
 - README : les durées d'entraînement annoncées (« nano : 10-15 min sur CPU ») étaient fausses ;
   remplacées par la mesure (`popixa bench`, `evals/BASELINES.md`).
 - Les presets d'architecture sont partagés (`model.SIZE_PRESETS`) entre `train.py` et
   `popixa bench`.
+
+### Mise à jour depuis 2.1
+- Installation éditable : après `git pull`, relance `pip install -e .` pour que la commande
+  `popixa` connaisse les nouveaux modules (`popixa update` fait `git pull` + `pip install -e .`).
 
 ## [2.1.0] — « Point zéro »
 

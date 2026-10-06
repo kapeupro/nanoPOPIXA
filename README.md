@@ -149,8 +149,10 @@ popixa train --data_dir data/ --resume          # reprendre depuis checkpoint
 popixa train --size nano --data_dir data/ --longrope   # rope_base=500k (la fenêtre reste block_size)
 ```
 
-> `--resume` reprend l'architecture du checkpoint (un `--size`/`--longrope` différent est
-> signalé puis ignoré) et le modèle final est toujours sauvegardé en fin d'entraînement.
+> `--resume` reprend l'architecture du checkpoint et, sans `--size`, ses hyperparamètres
+> d'entraînement (batch, LR). Un `--size` explicite différent ne change que ces hyperparamètres
+> (signalé), un `--longrope` différent est signalé puis ignoré. Le modèle final est toujours
+> sauvegardé en fin d'entraînement.
 
 ### Options chat
 
@@ -177,7 +179,7 @@ popixa gen --schema '{"type":"object","properties":{"nom":{"type":"string"}},"re
 popixa eval --data_dir data/ --out eval.json    # les 3 tâches, échantillons dans samples.md
 popixa eval --tasks paires                      # sans données : paires minimales seules
 popixa eval --data_dir data/ --max_bytes 1000000  # bpb sur le 1er Mo de texte (plus rapide)
-popixa bench                                    # preset small, ~15 s
+popixa bench                                    # preset small (~15 s sur GPU, plusieurs minutes sur CPU)
 popixa bench --size medium --json               # sortie JSON
 ```
 
@@ -188,7 +190,7 @@ popixa bench --size medium --json               # sortie JSON
 | `samples` | 20 amorces (`evals/prompts_fr.txt`) à graine fixe, 128 tokens chacune → `samples.md`, avec distinct-2 et taux de sorties répétitives. Une amorce que le tokenizer ne sait pas représenter (caractère hors vocabulaire) est signalée. |
 
 `eval.json` ne contient ni date ni durée, et l'empreinte du checkpoint est calculée sur les poids :
-deux évaluations des mêmes poids donnent le même fichier (même copié ailleurs), on peut le versionner
+deux évaluations des mêmes poids donnent le même fichier (même copié dans un autre dossier), on peut le versionner
 et le comparer. Le score des paires vient avec son intervalle de confiance à 95 % (≈ ± 5 points) :
 un écart plus petit n'est pas significatif. Chiffres de référence : [`evals/BASELINES.md`](evals/BASELINES.md).
 
