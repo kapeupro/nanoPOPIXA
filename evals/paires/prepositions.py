@@ -188,6 +188,7 @@ GABARITS = {
         ("Les comédiens jouent ce soir {} Lyon.", "à", "en"),
         ("Il est né {} Nantes.", "à", "en"),
         ("Mon ami vit {} Lisbonne depuis un an.", "à", "en"),
+        ("Le train s'arrête {} Bordeaux.", "à", "en"),
     ],
     # Pays au féminin : « en ».
     "pays_feminin": [
@@ -197,7 +198,7 @@ GABARITS = {
         ("Mes grands-parents habitent {} Pologne.", "en", "au"),
         ("Le jeune homme fit ses études {} Allemagne.", "en", "à"),
         ("On cultive beaucoup de riz {} Chine.", "en", "au"),
-        ("Le poète anglais est mort {} Grèce.", "en", "à"),
+        ("Le poète anglais est mort {} Grèce.", "en", "au"),
         ("Il a vécu longtemps {} Suède.", "en", "au"),
     ],
     # Pays masculin à initiale consonantique : « au ».
@@ -208,7 +209,7 @@ GABARITS = {
         ("Il fait très froid l'hiver {} Canada.", "au", "à le"),
         ("Les explorateurs sont arrivés {} Pérou.", "au", "à le"),
         ("Ce grand volcan se trouve {} Chili.", "au", "à"),
-        ("Mon voisin a longtemps travaillé {} Cameroun.", "au", "à"),
+        ("Mon voisin a longtemps travaillé {} Cameroun.", "au", "à le"),
     ],
     # Nom de lieu pluriel : « aux ».
     "pays_pluriel": [
@@ -225,11 +226,12 @@ GABARITS = {
         ("Mon père revient {} Japon demain.", "du", "de"),
         ("Ces oranges viennent {}Espagne.", "d'", "du "),
         ("Elle rentre {} Norvège la semaine prochaine.", "de", "du"),
-        ("Ce café vient {} Colombie.", "de", "du"),
         ("Les voyageurs arrivent {} États-Unis ce soir.", "des", "de les"),
         ("Mon oncle est revenu {} Portugal.", "du", "de le"),
         ("Ce marbre blanc vient {}Italie.", "d'", "du "),
-        ("Ces fleurs viennent {} Pays-Bas.", "des", "de"),
+        ("Ce fromage vient {} Pays-Bas.", "des", "de"),
+        ("Ce tapis précieux vient {}Iran.", "d'", "du "),
+        ("Ces roses viennent {}Équateur.", "d'", "du "),
     ],
 }
 
