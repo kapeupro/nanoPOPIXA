@@ -13,132 +13,167 @@ la forme correcte, soit la forme fautive. Tout le reste de la phrase est donc
 identique caractère pour caractère (différence minimale garantie par
 construction).
 
+Deux gabarits empêchent de résoudre le jeu par de simples indices de surface :
+
+* « genre_nom » : le déterminant ne porte PAS le genre (l', les, des, leur,
+  ou « mon » devant un nom féminin à voyelle : « Mon école est très
+  grande. »). Seul le genre lexical du nom décide de la forme de l'adjectif ;
+  certaines phrases ajoutent même un leurre de l'autre genre (« Ma sœur
+  porte des gants gris. », « Cette année, l'hiver fut très froid. »).
+* « accord_distance » : un complément du nom de genre ou de nombre opposé
+  s'intercale entre le nom et l'attribut (« Le vin de ces collines est
+  bon. », « L'histoire de ce vieux roi est vraie. ») ; l'accord ne se joue
+  plus dans une fenêtre de deux ou trois mots.
+
+Les adjectifs attributs sont des adjectifs purs, sauf « fermée » (exemple de
+référence du phénomène) et « ouvert », adjectifs lexicalisés : les accords
+de participes passés après « être » relèvent de participe_passe.py.
+
 Équilibre des longueurs : le féminin et le pluriel allongent en général le
 mot (« blanc » → « blanche », « noir » → « noirs », « un » → « une »). Pour
 qu'un modèle qui préfère simplement les phrases courtes ne gagne pas
-gratuitement, chaque gabarit alterne des paires où la bonne forme est la plus
-courte (masculin ou singulier attendu, ex. « un manteau noir » / « *un manteau
-noire ») et des paires où elle est la plus longue (féminin ou pluriel attendu,
-ex. « une robe blanche » / « *une robe blanc »). Seul le gabarit
-« det_defini » (le / la) donne des phrases de même longueur : c'est imposé
-par le phénomène, les deux articles ayant deux lettres.
+gratuitement, chaque gabarit contient autant de paires où la bonne forme est
+la plus courte (masculin ou singulier attendu, ex. « un manteau noir » /
+« *un manteau noire ») que de paires où elle est la plus longue (féminin ou
+pluriel attendu, ex. « une robe blanche » / « *une robe blanc »). Seul le
+gabarit « det_defini » (le / la) donne des phrases de même longueur : c'est
+imposé par le phénomène, les deux articles ayant deux lettres.
+
+Accord audible ou muet : environ un tiers des paires opposent des formes
+homophones (« noir » / « noire », « leur » / « leurs », « cet » / « cette ») ;
+l'accord n'y est qu'orthographique et son apprentissage dépend beaucoup de la
+tokenisation des suffixes -e et -s. Chaque cadre porte donc une étiquette
+« audible » ; accord_audible() renvoie {phrase correcte: bool} pour publier
+les deux sous-scores, sans changer le format des paires.
 
 Les noms à double genre (un livre / une livre, le tour / la tour, le page /
 la page, le poste / la poste…) et les adjectifs invariables en genre ou en
 nombre là où l'on teste ce trait (rouge au genre, vieux ou frais au pluriel
-masculin…) sont volontairement exclus. Les formes « bel » et « vieil »
-(devant voyelle) sont évitées ; « cet » n'apparaît que dans « Cet arbre »,
-où c'est justement la bonne forme.
+masculin…) sont volontairement exclus. Les formes « bel », « vieil » et
+« nouvel » (devant voyelle) sont évitées ; « cet » n'apparaît que dans
+« Cet arbre », où c'est justement la bonne forme.
 
 Module autonome, bibliothèque standard uniquement, sortie déterministe.
 """
 
 PHENOMENE = "accord_nominal"
 
-# Gabarit -> liste de (cadre, forme correcte, forme fautive).
+# Étiquettes d'audibilité : la forme correcte et la forme fautive se
+# prononcent-elles différemment (AUDIBLE) ou pareil (MUET) ?
+AUDIBLE, MUET = True, False
+
+# Gabarit -> liste de (cadre, forme correcte, forme fautive, audibilité).
 # Le cadre contient exactement une case « {} ».
 GABARITS = {
     # Genre : article indéfini un / une devant le nom.
     "det_indef": [
-        ("Mon frère a trouvé {} couteau dans l'herbe.", "un", "une"),
-        ("Le pêcheur répare {} bateau sur la plage.", "un", "une"),
-        ("Le soldat dort dans {} fauteuil.", "un", "une"),
-        ("Le meunier habite {} maison près du moulin.", "une", "un"),
-        ("Il a écrit {} lettre à son ami.", "une", "un"),
-        ("{} fleur pousse au bord du chemin.", "Une", "Un"),
+        ("Mon frère a trouvé {} couteau dans l'herbe.", "un", "une", AUDIBLE),
+        ("Le pêcheur répare {} bateau sur la plage.", "un", "une", AUDIBLE),
+        ("Le meunier habite {} maison près du moulin.", "une", "un", AUDIBLE),
+        ("{} fleur pousse au bord du chemin.", "Une", "Un", AUDIBLE),
     ],
     # Genre : article défini le / la (longueurs égales, imposé par le phénomène).
     "det_defini": [
-        ("Le vent souffle fort sur {} mer.", "la", "le"),
-        ("{} lune éclaire le village endormi.", "La", "Le"),
-        ("Les enfants courent vers {} château.", "le", "la"),
+        ("Mon cousin n'a jamais vu {} mer.", "la", "le", AUDIBLE),
+        ("{} lune éclaire le village endormi.", "La", "Le", AUDIBLE),
+        ("Les soldats marchent vers {} château.", "le", "la", AUDIBLE),
     ],
     # Genre : démonstratif ce / cet / cette.
     "det_demonstratif": [
-        ("Regarde {} navire sur la rivière.", "ce", "cette"),
-        ("J'aime beaucoup {} chanson.", "cette", "ce"),
-        ("{} arbre a plus de cent ans.", "Cet", "Cette"),
-        ("{} ville dort sous la neige.", "Cette", "Ce"),
-        ("{} verger appartient à mon oncle.", "Ce", "Cette"),
-        ("Nous connaissons bien {} rue.", "cette", "ce"),
+        ("Regarde {} cygne sur la rivière.", "ce", "cette", AUDIBLE),
+        ("J'aime beaucoup {} chanson.", "cette", "ce", AUDIBLE),
+        ("{} arbre a plus de cent ans.", "Cet", "Cette", MUET),
+        ("{} ville possède un grand port.", "Cette", "Ce", AUDIBLE),
     ],
     # Genre : possessif mon / ma, ton / ta, son / sa (noms à consonne initiale).
     "det_possessif": [
-        ("Il a perdu {} clé dans l'escalier.", "sa", "son"),
-        ("Elle cherche {} chapeau partout.", "son", "sa"),
-        ("Je range {} chambre le samedi.", "ma", "mon"),
-        ("Tu as oublié {} parapluie chez nous.", "ton", "ta"),
-        ("{} mère prépare le dîner.", "Ma", "Mon"),
-        ("{} père lit le journal.", "Mon", "Ma"),
+        ("Il a perdu {} clé dans l'escalier.", "sa", "son", AUDIBLE),
+        ("Elle cherche {} chapeau partout.", "son", "sa", AUDIBLE),
+        ("Je range {} chambre le samedi.", "ma", "mon", AUDIBLE),
+        ("Tu as oublié {} parapluie chez nous.", "ton", "ta", AUDIBLE),
     ],
-    # Nombre : le déterminant s'accorde avec le nom au singulier ou au pluriel.
+    # Nombre : le déterminant s'accorde avec le nom au singulier ou au pluriel
+    # (pluriel attendu dans 3 paires, singulier dans 3).
     "det_nombre": [
-        ("Je connais {} légendes depuis l'enfance.", "ces", "cette"),
-        ("Il lave {} verres après le repas.", "les", "le"),
-        ("Nous attendons {} cousins ce soir.", "nos", "notre"),
-        ("Le marchand vend {} fruits au marché.", "des", "un"),
-        ("Les paysans aiment {} village.", "leur", "leurs"),
+        ("Je connais {} légendes depuis l'enfance.", "ces", "cette", AUDIBLE),
+        ("Il lave {} verres après le repas.", "les", "le", AUDIBLE),
+        ("Le marchand vend {} fruits au marché.", "des", "un", AUDIBLE),
+        ("Les paysans aiment {} village.", "leur", "leurs", MUET),
+        ("Le cuisinier sort {} gâteau du four.", "le", "les", AUDIBLE),
+        ("Nous prendrons {} voiture demain matin.", "notre", "nos", AUDIBLE),
     ],
     # Déterminants quantifieurs : chaque, plusieurs, aucun(e), tout(e).
     "quantifieur": [
-        ("Il travaille chaque {} aux champs.", "jour", "jours"),
-        ("J'ai visité plusieurs {} en été.", "villes", "ville"),
-        ("Je n'ai reçu {} réponse.", "aucune", "aucun"),
-        ("Il n'a fait {} bruit.", "aucun", "aucune"),
-        ("{} la famille dort encore.", "Toute", "Tout"),
-        ("{} le village chante ce soir.", "Tout", "Toute"),
+        ("Il travaille chaque {} aux champs.", "jour", "jours", MUET),
+        ("J'ai visité plusieurs {} pendant le voyage.", "villes", "ville", MUET),
+        ("Je n'ai reçu {} réponse.", "aucune", "aucun", AUDIBLE),
+        ("Il n'a fait {} bruit.", "aucun", "aucune", AUDIBLE),
+        ("{} la famille dort encore.", "Toute", "Tout", AUDIBLE),
+        ("{} le peuple acclame le roi.", "Tout", "Toute", AUDIBLE),
     ],
     # Genre : adjectif épithète placé après le nom.
     "epithete_genre": [
-        ("La mariée porte une robe {}.", "blanche", "blanc"),
-        ("Le vieillard porte un manteau {}.", "noir", "noire"),
-        ("Le musicien joue une valse {}.", "ancienne", "ancien"),
-        ("Le prince monte un cheval {}.", "blanc", "blanche"),
-        ("Cette femme a une voix {}.", "douce", "doux"),
-        ("Le marin a un regard {}.", "sérieux", "sérieuse"),
+        ("La mariée porte une robe {}.", "blanche", "blanc", AUDIBLE),
+        ("Le vieillard porte un manteau {}.", "noir", "noire", MUET),
+        ("Le musicien joue une valse {}.", "ancienne", "ancien", AUDIBLE),
+        ("Le peintre a un atelier {}.", "lumineux", "lumineuse", AUDIBLE),
+        ("Cette femme a une voix {}.", "douce", "doux", AUDIBLE),
+        ("Le marin a un regard {}.", "sérieux", "sérieuse", AUDIBLE),
     ],
-    # Genre : adjectif antéposé à féminin irrégulier (vieux, beau, nouveau, bon, long, gros).
+    # Genre : adjectif antéposé à féminin irrégulier (vieux, beau, nouveau, bon, gros).
     "epithete_anteposee": [
-        ("Il vit dans un {} château.", "vieux", "vieille"),
-        ("Ils ont acheté une {} ferme.", "vieille", "vieux"),
-        ("Mon voisin a un {} jardin.", "beau", "belle"),
-        ("La reine porte une {} couronne.", "belle", "beau"),
-        ("Le village a construit un {} pont.", "nouveau", "nouvelle"),
-        ("Elle attend une {} nouvelle.", "bonne", "bon"),
-        ("Il a fait un {} voyage.", "long", "longue"),
-        ("Le fermier élève une {} vache.", "grosse", "gros"),
+        ("Il vit dans un {} château.", "vieux", "vieille", AUDIBLE),
+        ("Ils ont acheté une {} ferme.", "vieille", "vieux", AUDIBLE),
+        ("Mon voisin a un {} jardin.", "beau", "belle", AUDIBLE),
+        ("La commune a construit un {} pont.", "nouveau", "nouvelle", AUDIBLE),
+        ("Elle attend une {} nouvelle.", "bonne", "bon", AUDIBLE),
+        ("Le fermier élève une {} vache.", "grosse", "gros", AUDIBLE),
     ],
     # Nombre : adjectif épithète au singulier ou au pluriel.
     "epithete_nombre": [
-        ("J'ai vu des chats {} dans la cour.", "noirs", "noir"),
-        ("L'enfant a les yeux {}.", "bleus", "bleu"),
-        ("Le quartier a des rues {}.", "étroites", "étroite"),
-        ("Les {} jours reviennent enfin.", "beaux", "beau"),
-        ("Le chasseur a un chien {}.", "fidèle", "fidèles"),
-        ("Il boit un café {}.", "chaud", "chauds"),
-        ("Elle cueille une rose {}.", "rouge", "rouges"),
+        ("J'ai vu des chats {} dans la cour.", "noirs", "noir", MUET),
+        ("L'enfant a les yeux {}.", "bleus", "bleu", MUET),
+        ("Les {} jours reviennent enfin.", "beaux", "beau", MUET),
+        ("Le chasseur a un chien {}.", "fidèle", "fidèles", MUET),
+        ("Il boit un café {}.", "chaud", "chauds", MUET),
+        ("Elle cueille une rose {}.", "rouge", "rouges", MUET),
     ],
-    # Genre : adjectif (ou participe) attribut du sujet.
+    # Genre : adjectif attribut du sujet.
     "attribut_genre": [
-        ("La porte est {}.", "fermée", "fermé"),
-        ("Le musée est {} le dimanche.", "ouvert", "ouverte"),
-        ("La neige est {} ce matin.", "blanche", "blanc"),
-        ("Le ciel est {} aujourd'hui.", "bleu", "bleue"),
-        ("Ma tante semble {}.", "heureuse", "heureux"),
-        ("Le pain est encore {}.", "frais", "fraîche"),
-        ("Le loup paraît {}.", "cruel", "cruelle"),
-        ("La princesse était très {}.", "belle", "beau"),
+        ("La porte est {}.", "fermée", "fermé", MUET),
+        ("Le musée est {} le dimanche.", "ouvert", "ouverte", AUDIBLE),
+        ("Ma tante semble {} depuis son mariage.", "heureuse", "heureux", AUDIBLE),
+        ("Le pain est encore {}.", "frais", "fraîche", AUDIBLE),
+        ("Le loup paraît {} dans la fable.", "cruel", "cruelle", MUET),
+        ("La princesse était très {}.", "jalouse", "jaloux", AUDIBLE),
     ],
-    # Nombre : adjectif (ou participe) attribut du sujet.
+    # Nombre : adjectif attribut du sujet.
     "attribut_nombre": [
-        ("Les fenêtres sont {}.", "ouvertes", "ouverte"),
-        ("La rivière est {}.", "profonde", "profondes"),
-        ("Les enfants sont {} ce soir.", "fatigués", "fatigué"),
-        ("Le chevalier est {}.", "blessé", "blessés"),
-        ("Les rues semblent {}.", "désertes", "déserte"),
-        ("Le lac reste {}.", "calme", "calmes"),
-        ("Les fleurs sont {} au printemps.", "belles", "belle"),
-        ("Le vin est {}.", "bon", "bons"),
+        ("Les routes sont {} en hiver.", "dangereuses", "dangereuse", MUET),
+        ("La forêt est {} et silencieuse.", "sombre", "sombres", MUET),
+        ("Le chevalier est {}.", "fier", "fiers", MUET),
+        ("En novembre, les plages sont {}.", "désertes", "déserte", MUET),
+        ("Le lac reste {} malgré le vent.", "calme", "calmes", MUET),
+        ("Les journées sont {} en été.", "longues", "longue", MUET),
+    ],
+    # Genre porté par le nom seul : déterminant non marqué en genre (l', les,
+    # des, leur, « mon » devant voyelle), parfois avec un leurre de l'autre genre.
+    "genre_nom": [
+        ("Mon école est très {}.", "grande", "grand", AUDIBLE),
+        ("Cette année, l'hiver fut très {}.", "froid", "froide", AUDIBLE),
+        ("Ma sœur porte des gants {}.", "gris", "grises", AUDIBLE),
+        ("Il a acheté des chaussures {}.", "neuves", "neufs", AUDIBLE),
+        ("L'armoire du grenier est très {}.", "lourde", "lourd", AUDIBLE),
+        ("Leur fils est très {}.", "courageux", "courageuse", AUDIBLE),
+    ],
+    # Accord à distance : complément du nom intercalé, de genre ou de nombre opposé.
+    "accord_distance": [
+        ("Le panier de ma grand-mère est {}.", "léger", "légère", AUDIBLE),
+        ("La cabane du berger est {}.", "petite", "petit", AUDIBLE),
+        ("Les cerises du jardin sont {}.", "mûres", "mûrs", MUET),
+        ("Le chef des brigands était {}.", "méchant", "méchants", MUET),
+        ("Le vin de ces collines est {}.", "bon", "bons", MUET),
+        ("L'histoire de ce vieux roi est {}.", "vraie", "vrai", MUET),
     ],
 }
 
@@ -151,7 +186,7 @@ def generate() -> list:
     """
     paires = []
     for gabarit, cadres in GABARITS.items():
-        for cadre, bonne, mauvaise in cadres:
+        for cadre, bonne, mauvaise, _audible in cadres:
             paires.append({
                 "good": cadre.format(bonne),
                 "bad": cadre.format(mauvaise),
@@ -161,11 +196,27 @@ def generate() -> list:
     return paires
 
 
+def accord_audible() -> dict:
+    """{phrase correcte: True si l'accord s'entend à l'oral, False s'il est muet}.
+
+    Permet de calculer deux sous-scores (accord audible / accord purement
+    orthographique) sans ajouter de clé aux paires de generate().
+    """
+    return {
+        cadre.format(bonne): audible
+        for cadres in GABARITS.values()
+        for cadre, bonne, _mauvaise, audible in cadres
+    }
+
+
 if __name__ == "__main__":
     # Affichage rapide : python evals/paires/accord_nominal.py
     _paires = generate()
+    _audible = accord_audible()
     for _p in _paires:
-        print(f"[{_p['gabarit']}] {_p['good']}  |  *{_p['bad']}")
+        _tag = "oral" if _audible[_p["good"]] else "muet"
+        print(f"[{_p['gabarit']}|{_tag}] {_p['good']}  |  *{_p['bad']}")
     _courtes = sum(len(p["good"]) < len(p["bad"]) for p in _paires)
+    _muettes = sum(not v for v in _audible.values())
     print(f"{len(_paires)} paires, bonne phrase plus courte : "
-          f"{100 * _courtes / len(_paires):.1f} %")
+          f"{100 * _courtes / len(_paires):.1f} %, accord muet : {_muettes}")
