@@ -416,19 +416,16 @@ def test_failed_first_save_keeps_previous_run(tmp_path):
     assert sorted(p.name for p in run.iterdir()) == sorted([*b_files, "prev", ".train.lock"])
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_FSIZE POSIX")
 def test_failure_before_the_training_loop_restores_previous_run(tmp_path):
-    """Disque plein dès l'écriture de train.log (après la mise de côté, avant la boucle) : le run
-    précédent est remis en place tout de suite, pas laissé caché dans prev.new/."""
-    import resource
+    """Échec dès les écritures du lancement (après la mise de côté, avant la boucle : disque plein
+    sur train.log / run.json…) : le run précédent est remis en place tout de suite, pas laissé caché
+    dans prev.new/."""
     (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
     assert _train(tmp_path, "--max_iters", "2").returncode == 0
     run = tmp_path / "out-nanopopixa"
     before = _snapshot(run)
-    r = subprocess.run([sys.executable, os.path.join(ROOT, "train.py"), "--size", "nano", "--batch_size", "2",
-                        "--max_iters", "2", "--seed", "3"], cwd=str(tmp_path), env=ENV, capture_output=True,
-                       text=True, timeout=600,
-                       preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (10, 10)))
+    (run / "run.json.tmp").mkdir()                         # l'écriture de run.json « en cours » échoue
+    r = _train(tmp_path, "--max_iters", "2", "--seed", "3")
     assert r.returncode != 0 and "remis en place" in r.stdout, r.stdout + r.stderr
     assert _snapshot(run) == before and not (run / "prev.new").exists()
 
