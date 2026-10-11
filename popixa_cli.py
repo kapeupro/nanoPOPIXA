@@ -245,7 +245,8 @@ def _default_log(run: str = None) -> str:
 
 def cmd_monitor(args):
     from monitor import run_monitor
-    run_monitor(args.log or _default_log(args.run), args.refresh)
+    follow = None if (args.log or args.run) else _default_log      # suit le log le plus récent
+    run_monitor(args.log or _default_log(args.run), args.refresh, resolve=follow)
 
 
 def cmd_runs(args):
@@ -493,8 +494,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── monitor ───────────────────────────────────────────────────────
     p_mon = sub.add_parser("monitor")
     p_mon.add_argument("--log",     default=None,
-                       help="Fichier de log (défaut : celui de --run, sinon out-nanopopixa/train.log)")
-    p_mon.add_argument("--run",     default=None)
+                       help="Fichier de log (défaut : le train.log le plus récent parmi out-nanopopixa/, "
+                            "runs/*/ et ./, réévalué à chaque rafraîchissement)")
+    p_mon.add_argument("--run",     default=None, help="Expérience : runs/NOM/train.log")
 
     # ── runs ──────────────────────────────────────────────────────────
     p_runs = sub.add_parser("runs")

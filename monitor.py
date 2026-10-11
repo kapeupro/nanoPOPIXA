@@ -398,12 +398,16 @@ def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.l
 
 
 # ─── Boucle principale ────────────────────────────────────────────────────────
-def run_monitor(log_path: str, refresh: float):
+def run_monitor(log_path: str, refresh: float, resolve=None):
+    """resolve : fonction rappelée à chaque rafraîchissement pour choisir le log (sans --log ni
+    --run, on suit ainsi l'entraînement lancé APRÈS le monitor)."""
     abs_path = os.path.abspath(log_path)
     sys.stdout.write("\033[?25l")
     sys.stdout.flush()
     try:
         while True:
+            if resolve is not None:
+                abs_path = os.path.abspath(resolve())
             entries, max_iters, eval_interval, batch_size, block_size = parse_log(abs_path)
             try:
                 cols = os.get_terminal_size().columns
@@ -447,7 +451,8 @@ def main():
     parser.add_argument("--refresh", type=positive_float, default=1.0)
     args = parser.parse_args()
     from popixa_cli import _default_log
-    run_monitor(args.log or _default_log(args.run), args.refresh)
+    follow = None if (args.log or args.run) else _default_log
+    run_monitor(args.log or _default_log(args.run), args.refresh, resolve=follow)
 
 
 if __name__ == "__main__":

@@ -232,7 +232,10 @@ def test_train_rejects_bad_options(tmp_path):
         r = _train(tmp_path, "--max_iters", "1", "--dtype", "float16")
         assert r.returncode == 1 and "float16" in r.stdout
     r = _train(tmp_path, "--max_iters", "1", "--dtype", "bfloat16")                # autocast CPU
-    assert r.returncode == 0, r.stdout + r.stderr
+    if torch.cuda.is_available() or torch.backends.mps.is_available():
+        assert r.returncode == 0 or "indisponible" in r.stdout, r.stdout + r.stderr  # selon l'appareil
+    else:
+        assert r.returncode == 0, r.stdout + r.stderr
 
 
 def _val_losses(log_path):
@@ -277,29 +280,87 @@ def test_resume_keeps_run_identity_and_applies_new_optimizer_settings(tmp_path):
 
 
 def test_resume_rewrites_a_missing_or_foreign_best_pt(tmp_path):
-    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    """best.pt absent ou d'un autre run, meilleur point ≠ dernier checkpoint : réécrit par la reprise."""
+    (tmp_path / "input.txt").write_text("ab" * 9000 + "xy" * 1100, encoding="utf-8")   # val se dégrade
+    assert _train(tmp_path, "--max_iters", "3", "--eval_interval", "1", "--eval_iters", "2").returncode == 0
+    run = tmp_path / "out-nanopopixa"
+    assert torch.load(str(run / "best.pt"), weights_only=True)["iter"] < 3        # meilleur point précoce
+    (run / "best.pt").unlink()
+    r = _train(tmp_path, "--max_iters", "5", "--eval_interval", "1", "--eval_iters", "2", "--resume")
+    assert r.returncode == 0 and "il sera réécrit" in r.stdout, r.stdout + r.stderr
+    assert torch.load(str(run / "best.pt"), weights_only=True)["iter"] > 3        # réécrit par CE run
+    # best.pt « étranger » (autre run) : même traitement
+    sys.path.insert(0, ROOT)
+    from checkpoint import save_checkpoint
+    foreign = torch.load(str(run / "best.pt"), weights_only=True)
+    foreign.update(iter=1, val_loss=9.9)
+    save_checkpoint(str(run / "best.pt"), foreign)
+    r = _train(tmp_path, "--max_iters", "7", "--eval_interval", "1", "--eval_iters", "2", "--resume")
+    assert r.returncode == 0 and "autre entraînement" in r.stdout, r.stdout + r.stderr
+    assert torch.load(str(run / "best.pt"), weights_only=True)["iter"] > 5
+
+
+def test_resume_restores_best_from_last_checkpoint(tmp_path):
+    """best.pt perdu mais meilleur point = dernier checkpoint : restauré sans réentraîner."""
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")       # val décroissante
     assert _train(tmp_path, "--max_iters", "2", "--eval_interval", "1").returncode == 0
     run = tmp_path / "out-nanopopixa"
+    assert torch.load(str(run / "best.pt"), weights_only=True)["iter"] == 2
     (run / "best.pt").unlink()
-    r = _train(tmp_path, "--max_iters", "4", "--eval_interval", "1", "--resume")
-    assert r.returncode == 0 and "il sera réécrit" in r.stdout, r.stdout + r.stderr
-    best = torch.load(str(run / "best.pt"), weights_only=True)
-    assert best["iter"] in (3, 4)                                   # réécrit par CE run
+    r = _train(tmp_path, "--resume", size=None)
+    assert r.returncode == 0 and "restauré" in r.stdout, r.stdout + r.stderr
+    assert torch.load(str(run / "best.pt"), weights_only=True)["iter"] == 2
 
 
-def test_interrupted_run_is_marked_in_run_json(tmp_path):
+def _interrupt_after(tmp_path, marker, *args):
+    """Lance train.py et lui envoie Ctrl+C (SIGINT) dès que `marker` apparaît dans sa sortie."""
     import signal
-    import time
-    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    import threading
+    env = dict(ENV, PYTHONUNBUFFERED="1")
     p = subprocess.Popen([sys.executable, os.path.join(ROOT, "train.py"), "--size", "nano", "--batch_size", "2",
-                          "--max_iters", "100000", "--run", "coupe"],
-                         cwd=str(tmp_path), env=ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    deadline = time.time() + 300
-    for line in p.stdout:                                           # attendre que la boucle tourne
-        if "iter     0" in line or time.time() > deadline:
-            break
-    time.sleep(1)
-    p.send_signal(signal.SIGINT)
-    p.communicate(timeout=120)
+                          *args], cwd=str(tmp_path), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+    seen = threading.Event()
+    out = []
+
+    def reader():
+        for line in p.stdout:
+            out.append(line)
+            if marker in line:
+                seen.set()
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    try:
+        assert seen.wait(timeout=300), "".join(out)
+        p.send_signal(signal.SIGINT)
+        p.wait(timeout=120)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    t.join(timeout=10)
+    return "".join(out)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGINT POSIX")
+def test_interrupted_run_is_marked_in_run_json(tmp_path):
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    _interrupt_after(tmp_path, "iter     2", "--max_iters", "100000", "--eval_interval", "1",
+                     "--eval_iters", "1", "--run", "coupe")
     info = json.loads((tmp_path / "runs" / "coupe" / "run.json").read_text(encoding="utf-8"))
-    assert info["status"] == "interrompu" and info["last_iter"] >= 0
+    assert info["status"] == "interrompu" and info["last_iter"] >= 2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGINT POSIX")
+def test_new_run_interrupted_before_first_save_leaves_folder_unchanged(tmp_path):
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2", "--eval").returncode == 0           # run A
+    run = tmp_path / "out-nanopopixa"
+    before = {n: (run / n).read_bytes() for n in ("run.json", "train.log", "eval.json", "best.pt",
+                                                    "checkpoint.pt")}
+    out = _interrupt_after(tmp_path, "iter     0", "--max_iters", "100000", "--seed", "9")   # run B
+    assert "inchangé" in out
+    for name, content in before.items():
+        assert (run / name).read_bytes() == content, name
+    r = _train(tmp_path, "--resume", size=None)                                      # reprend A, cohérent
+    assert r.returncode == 0 and "déjà terminé" in r.stdout and "autre entraînement" not in r.stdout

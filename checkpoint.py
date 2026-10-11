@@ -105,8 +105,10 @@ def load_checkpoint(path: str, map_location="cpu", log=print) -> dict:
         raise
     except EOFError:
         raise ValueError(f"checkpoint {path} vide ou tronqué") from None
-    except OSError as e:
+    except PermissionError as e:
         raise ValueError(f"checkpoint {path} illisible : {e.strerror or e}") from None
+    except OSError:                                   # EINVAL… : archive tronquée ou abîmée
+        raise ValueError(f"checkpoint {path} illisible : fichier corrompu ou tronqué") from None
     except Exception as first:
         # Ancien format (POPIXAConfig picklée) — ou fichier corrompu / piégé
         if "POPIXAConfig" not in str(first):

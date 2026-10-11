@@ -26,10 +26,12 @@ def test_format2_roundtrip_is_loadable_with_weights_only(tmp_path):
     assert all(torch.equal(a, b) for a, b in zip(m.state_dict().values(), m2.state_dict().values()))
 
 
-def test_legacy_checkpoint_with_pickled_config_still_loads(tmp_path):
+def test_legacy_checkpoint_with_pickled_config_still_loads(tmp_path, monkeypatch):
     m = make_model()
     path = str(tmp_path / "old.pt")
     torch.save({"model": m.state_dict(), "config": m.config, "iter": 3}, path)   # format 2.0 – 2.2
+    if not hasattr(torch.serialization, "add_safe_globals"):                     # PyTorch < 2.4
+        monkeypatch.setenv("POPIXA_TRUST_CHECKPOINTS", "1")
     ck = load_checkpoint(path)
     assert isinstance(ck["config"], POPIXAConfig) and ck["config"] == m.config and ck["iter"] == 3
 
@@ -48,10 +50,18 @@ def test_malicious_checkpoint_is_refused_without_running_code(tmp_path):
     assert not marker.exists()                                 # le code n'a jamais tourné
 
 
-@pytest.mark.parametrize("content,match", [(b"pas un checkpoint", "illisible"), (b"", "vide")])
+def _truncated_checkpoint(tmp_path):
+    good = tmp_path / "good.pt"
+    save_checkpoint(str(good), {"model": make_model().state_dict(), "iter": 1})
+    data = good.read_bytes()
+    return data[:len(data) // 2]
+
+
+@pytest.mark.parametrize("content,match", [(b"pas un checkpoint", "illisible"), (b"", "vide"),
+                                           ("tronque", "corrompu ou tronqué|illisible")])
 def test_corrupt_or_empty_files_give_clear_errors(tmp_path, content, match):
     path = tmp_path / "bad.pt"
-    path.write_bytes(content)
+    path.write_bytes(_truncated_checkpoint(tmp_path) if content == "tronque" else content)
     with pytest.raises(ValueError, match=match):
         load_checkpoint(str(path))
     with pytest.raises(FileNotFoundError):

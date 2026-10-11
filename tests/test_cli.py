@@ -113,3 +113,16 @@ def test_train_relays_zero_valued_options(monkeypatch):
                      ("--weight_decay", "0.0"), ("--attn_dropout", "0.0")):
         assert argv[argv.index(opt) + 1] == val, argv
     assert "--eval" in argv and "--resume" not in argv and "--size" not in argv
+
+
+def test_default_log_follows_the_most_recent_training(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    old, new = tmp_path / "runs" / "a" / "train.log", tmp_path / "out-nanopopixa" / "train.log"
+    for p in (old, new):
+        p.parent.mkdir(parents=True)
+        p.write_text("", encoding="utf-8")
+    os.utime(old, (2_000_000_000, 2_000_000_000))
+    os.utime(new, (1_000_000_000, 1_000_000_000))
+    assert popixa_cli._default_log() == os.path.join("runs", "a", "train.log")
+    os.utime(new, (2_100_000_000, 2_100_000_000))                     # un nouvel entraînement démarre
+    assert popixa_cli._default_log() == os.path.join("out-nanopopixa", "train.log")
