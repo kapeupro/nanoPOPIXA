@@ -19,12 +19,15 @@ Token Embedding (wte, weight-tied avec lm_head)
   `KVCache` (sous-classe de `list`) dont `token_ids` = ids exacts couverts par le cache
 - **Flash Attention** — `F.scaled_dot_product_attention` si PyTorch ≥ 2.0 ; prefill par morceaux
   sur un cache existant → masque causal **décalé** (`tril(diagonal=past_len)`)
+- **Dropout** — `dropout` (embeddings, résiduels, MLP) ; `attn_dropout = 0.0` par défaut DANS
+  l'attention : `dropout_p > 0` force le noyau SDPA « math » lent sur CPU/MPS (≈ 2,2× en entraînement)
 
 ## Fichiers clés
 
 | Fichier | Rôle |
 |---|---|
-| `model.py` | Architecture complète + génération (generate, generate_stream, thinking, speculative, structured) |
+| `model.py` | Architecture : `POPIXAConfig`, `SIZE_PRESETS`, couches, `nanoPOPIXA` (init, forward) ; ré-exporte `KVCache`, `_Decoder`… |
+| `generation.py` | Génération : `GenerationMixin` hérité par `nanoPOPIXA` (sampling, generate, generate_stream, thinking, speculative, structured), `KVCache`, `_Decoder` — n'importe pas `model` |
 | `train.py` | Boucle d'entraînement, LR scheduling cosine+warmup |
 | `chat.py` | CLI interactif, effort levels, thinking blocks, KV-cache persistant |
 | `session_cache.py` | Sérialisation/restauration du KV-cache entre sessions (format v3 : ids exacts + historique) |
@@ -38,7 +41,9 @@ Token Embedding (wte, weight-tied avec lm_head)
 ## Conventions de code
 
 - Pas de biais (`bias=False`) sur toutes les Linear dans v2
-- `POPIXAConfig` est un `@dataclass` — ajouter `rope_base: int = 10_000` si besoin
+- `POPIXAConfig` est un `@dataclass` — ajouter `rope_base: int = 10_000` si besoin ; picklé dans les
+  checkpoints sous `model.POPIXAConfig` (ne pas le déplacer) → nouveau champ à la FIN, avec défaut,
+  lu via `getattr(config, "champ", défaut)` (configs anciens sans l'attribut)
 - Presets d'architecture : `model.SIZE_PRESETS` (nano/small/medium), partagés par train.py et bench ;
   `popixa train` = `small` par défaut, `--seed` (défaut 1337) → poids identiques bit à bit sur CPU
 - `forward(idx, targets=None, past_kvs=None)` :
@@ -47,7 +52,7 @@ Token Embedding (wte, weight-tied avec lm_head)
 - Les checkpoints v1 (LayerNorm + wpe + GELU) sont incompatibles avec v2 → réentraîner
   (`checkpoint_v1_error(state_dict)` donne un message propre dans chat / gen / train --resume)
 - `generate_stream` accepte `initial_past_kvs` et `cache_ref` pour la persistance de session
-- Tous les générateurs passent par `_Decoder` (model.py) — invariants :
+- Tous les générateurs passent par `_Decoder` (generation.py) — invariants :
   - `dec.idx` = contexte connu (ids du cache initial s'ils sont connus + entrée + tokens générés)
   - `dec.past_kvs` couvre `dec.idx` sauf les `pending` derniers tokens
   - au-delà de `block_size` : prefill glissant sur les 75% derniers tokens (jamais de crash)

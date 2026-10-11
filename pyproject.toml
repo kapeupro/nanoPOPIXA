@@ -26,6 +26,7 @@ popixa = "popixa_cli:main"
 [tool.setuptools]
 py-modules = [
     "model",
+    "generation",
     "train",
     "chat",
     "data_prep",
