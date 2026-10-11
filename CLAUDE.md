@@ -190,8 +190,9 @@ EFFORT_PRESETS = {
   - verrou par dossier (`runlock.py`, `DOSSIER/.train.lock`, flock / msvcrt) pris AVANT de toucher au
     dossier et tenu jusqu'à la fin : 2e train.py dans le même dossier → refus, rien touché ; le shell
     `popixa` (train.py via runpy, même processus) le rend avec `runlock.release_all()` ; `.train.lock`
-    illisible (autre utilisateur) → acquire → None, refus ; dossier non inscriptible → acquire → False
-    ou `os.access` → refus clair, rien touché ; `_default_log` et
+    illisible (autre utilisateur) → acquire → None, refus ; dossier non inscriptible (acquire → False ou
+    `os.access`) → `_need_write()` refuse dès qu'il faudrait écrire (« rien à faire » reste possible) ;
+    `_default_log` et
     `monitor._follow` préfèrent un run dont le verrou est tenu (`runlock.is_active`)
   - lancements transactionnels : un nouveau run dans un dossier occupé crée `prev.new/` + son marqueur
     `.transaction`, y déplace les `RUN_FILES` du run précédent puis écrit `.complet` ; `prev.new/` et

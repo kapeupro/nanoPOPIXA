@@ -201,12 +201,20 @@ def _recover_launch() -> bool:
 
 
 _lock = None
+_readonly = False       # dossier non inscriptible : refus seulement s'il faut y écrire (_need_write)
+
+
+def _need_write() -> None:
+    if _readonly:
+        print(f"❌ {out_dir}/ n'est pas inscriptible — copie le run dans un dossier à toi "
+              "(--out_dir) ; rien n'a été modifié")
+        sys.exit(1)
 
 
 def _lock_out_dir() -> None:
     """Verrou du dossier pour toute la vie du processus — AVANT d'y toucher : un 2e lancement
     dans le même dossier ne doit ni annuler la mise de côté du premier ni écrire dans son run."""
-    global _lock
+    global _lock, _readonly
     if _lock is None:
         import runlock
         _lock = runlock.acquire(out_dir)
@@ -219,14 +227,13 @@ def _lock_out_dir() -> None:
             print(f"❌ Un entraînement tourne déjà dans {out_dir}/ — attends sa fin ou choisis "
                   "un autre dossier (--run NOM, --out_dir)")
             sys.exit(1)
-        if _lock is False or not os.access(out_dir, os.W_OK):
-            print(f"❌ {out_dir}/ n'est pas inscriptible — copie le run dans un dossier à toi "
-                  "(--out_dir) ; rien n'a été modifié")
-            sys.exit(1)
+        _readonly = _lock is False or not os.access(out_dir, os.W_OK)
 
 
 if os.path.isdir(out_dir):
     _lock_out_dir()
+    if os.path.isdir(staging_dir) or os.path.isdir(old_dir):
+        _need_write()                     # lancement précédent à rattraper
     _check_reserved()
     if _recover_launch():
         print(f"♻️  Lancement précédent arrêté avant sa 1re sauvegarde : run d'avant restauré dans {out_dir}/")
@@ -581,7 +588,12 @@ optimizer = torch.optim.AdamW([{"params": _decay, "weight_decay": weight_decay},
                                {"params": _no_decay, "weight_decay": 0.0}],
                               lr=learning_rate, betas=betas)
 
-os.makedirs(out_dir, exist_ok=True)
+try:
+    os.makedirs(out_dir, exist_ok=True)
+except OSError as e:                      # parent non inscriptible, out_dir est un fichier…
+    print(f"❌ impossible de créer {out_dir}/ ({e.strerror}) — choisis un dossier à toi "
+          "(--out_dir, --run) ; rien n'a été modifié")
+    sys.exit(1)
 _lock_out_dir()
 
 # ── Reprise depuis checkpoint ──────────────────────────────────────────────────
@@ -627,6 +639,8 @@ if resume_ckpt is not None:
                      if _nothing_to_do else " : il sera réécrit à la prochaine évaluation"))
             best_val, best_iter = float("inf"), None
     bad_evals  = resume_ckpt.get("bad_evals", 0) if args.patience is None else 0
+    if not _nothing_to_do or _restore_best:
+        _need_write()                     # « rien à faire » reste possible en lecture seule
     _batch_gen.manual_seed(seed + iter_start)
     if resume_ckpt.get("stopped_early") and args.patience is None:
         print(f"✅ Entraînement arrêté plus tôt (iter {iter_start}, meilleure val loss à l'iter "
@@ -639,6 +653,7 @@ if resume_ckpt is not None:
     del resume_ckpt
 else:
     best_val, best_iter, bad_evals = float("inf"), None, 0
+    _need_write()
     # Nouvel entraînement : on ne détruit jamais silencieusement un run existant (voir plus haut)
     _old = [n for n in RUN_FILES if os.path.exists(os.path.join(out_dir, n))]
     if _old:

@@ -448,11 +448,20 @@ def test_unwritable_folder_or_unreadable_lock_is_refused_cleanly(tmp_path):
         run.chmod(0o555)
         r = _train(tmp_path, "--resume", "--max_iters", "4", size=None)
         assert r.returncode == 1 and "pas inscriptible" in r.stdout, r.stdout + r.stderr
+        r = _train(tmp_path, "--resume", size=None)                # rien à faire : rien à écrire
+        assert r.returncode == 0 and "déjà terminé" in r.stdout, r.stdout + r.stderr
     finally:
         run.chmod(0o755)
         if lock.exists():
             lock.chmod(0o644)
     assert _snapshot(run) == before
+
+
+def test_out_dir_that_cannot_be_created_gives_a_clear_message(tmp_path):
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    r = _train(tmp_path, "--max_iters", "2", "--out_dir", "input.txt/run")       # parent = un fichier
+    assert r.returncode == 1 and "impossible de créer" in r.stdout and "Traceback" not in r.stderr, \
+        r.stdout + r.stderr
 
 
 def test_second_training_in_the_same_folder_is_refused(tmp_path):
