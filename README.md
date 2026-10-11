@@ -339,7 +339,8 @@ temps pour 1 milliard de tokens d'entraînement sur ta machine.
 
 ```
 nanopopixa/
-├── model.py       # Transformer v2 : RMSNorm · SwiGLU · RoPE · KV-Cache · Thinking
+├── model.py       # Transformer v2 : RMSNorm · SwiGLU · RoPE · attention + KV-Cache (architecture)
+├── generation.py  # Génération : sampling · streaming · thinking · speculative · structured
 ├── train.py       # Boucle d'entraînement + LR scheduling
 ├── chat.py        # REPL interactif : thinking blocks · effort levels · auto-compact
 ├── structured.py  # Structured outputs : matcher JSON Schema octet par octet + masques de tokens

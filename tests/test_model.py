@@ -1,12 +1,18 @@
 """Tests du modèle : attention + KV-cache, fenêtre glissante, sampling, générateurs, speculative decoding."""
 
 import collections
+import os
+import pickle
+import subprocess
+import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
 
-from conftest import make_model
-from model import KVCache, RMSNorm, checkpoint_v1_error, nanoPOPIXA
+import model as model_mod
+from conftest import ROOT, make_model
+from model import KVCache, POPIXAConfig, RMSNorm, checkpoint_v1_error, nanoPOPIXA
 
 
 def _set_flash(model, flash: bool):
@@ -265,3 +271,114 @@ class _OpenConstraint:
 def test_structured_keeps_sampling_when_closing_is_unknown(model):
     toks = list(model.generate_structured(torch.tensor([[1]]), _OpenConstraint(65), max_new_tokens=50))
     assert len(toks) == 50     # pas d'arrêt prématuré quand la fermeture est inexprimable
+
+
+# ── Découpage model.py / generation.py (2.3) ────────────────────────────────
+
+def test_generation_split_keeps_model_api():
+    import generation
+    assert issubclass(nanoPOPIXA, generation.GenerationMixin)
+    # Ré-exports : `from model import KVCache, _Decoder…` (chat, session_cache, tests) reste valable
+    for name in ("GenerationMixin", "KVCache", "_Decoder", "_cache_len", "_store_cache"):
+        assert getattr(model_mod, name) is getattr(generation, name)
+    for meth in ("_apply_sampling", "_is_repetitive", "_has_diminishing_returns", "_should_stop",
+                 "_sample_stream", "generate", "generate_stream", "adaptive_think_budget",
+                 "generate_stream_with_thinking", "generate_stream_with_interleaved_thinking",
+                 "_draft_ngram", "_draft_self", "speculative_generate_stream", "generate_structured"):
+        assert getattr(nanoPOPIXA, meth).__module__ == "generation", meth
+    assert nanoPOPIXA.STOP_POLICIES == ("repetitive", "diminishing", "off")
+    # Les checkpoints existants contiennent un config picklé sous `model.POPIXAConfig`
+    assert POPIXAConfig.__module__ == "model"
+    cfg = pickle.loads(pickle.dumps(POPIXAConfig(vocab_size=10)))
+    assert type(cfg) is POPIXAConfig and cfg.vocab_size == 10
+
+
+def test_generation_does_not_import_model():
+    """generation.py n'importe pas model au niveau module (model l'importe → import circulaire)."""
+    code = "import sys, generation; assert 'model' not in sys.modules, sorted(sys.modules)"
+    r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,
+                       env=dict(os.environ, PYTHONPATH=ROOT), timeout=300)
+    assert r.returncode == 0, r.stderr[-800:]
+
+
+# ── Dropout d'attention (2.3) ────────────────────────────────────────────────
+
+def _tiny_config(**kw):
+    return POPIXAConfig(**dict(dict(block_size=16, vocab_size=65, n_layer=2, n_head=2, n_embd=32), **kw))
+
+
+def _spy_sdpa_dropout(monkeypatch):
+    """Espionne F.scaled_dot_product_attention tel que model.py l'appelle → liste des dropout_p."""
+    seen, real = [], model_mod.F.scaled_dot_product_attention
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("dropout_p", args[4] if len(args) > 4 else 0.0))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(model_mod.F, "scaled_dot_product_attention", spy)
+    return seen
+
+
+def test_attn_dropout_off_by_default_keeps_fast_sdpa(monkeypatch):
+    """dropout=0.1 (train.py) ne force plus le noyau SDPA « math » lent : dropout_p=0 en train."""
+    cfg = _tiny_config(dropout=0.1)
+    assert cfg.attn_dropout == 0.0
+    m = nanoPOPIXA(cfg)
+    m.train()
+    assert all(blk.attn.flash for blk in m.transformer.h)
+    seen = _spy_sdpa_dropout(monkeypatch)
+    idx = torch.randint(0, 65, (2, 16))
+    _, loss = m(idx, idx)
+    loss.backward()
+    assert seen == [0.0, 0.0]                                   # une fois par couche
+    attn = m.transformer.h[0].attn
+    assert attn.attn_dropout.p == 0.0                           # chemin manuel aussi
+    # Le dropout résiduel, MLP et embeddings garde config.dropout
+    assert attn.resid_dropout.p == 0.1
+    assert m.transformer.h[0].mlp.dropout.p == 0.1 and m.transformer.drop.p == 0.1
+
+
+def test_attn_dropout_applies_in_training_only(monkeypatch):
+    m = nanoPOPIXA(_tiny_config(dropout=0.1, attn_dropout=0.2))
+    assert m.transformer.h[0].attn.attn_dropout.p == 0.2        # chemin manuel : nn.Dropout(0.2)
+    seen = _spy_sdpa_dropout(monkeypatch)
+    idx = torch.randint(0, 65, (1, 8))
+    m.train()
+    m(idx, idx)
+    assert seen == [0.2, 0.2]
+    seen.clear()
+    m.train(False)
+    with torch.no_grad():
+        m(idx)                                                  # inférence
+        m.generate(idx, 3, temperature=0)                       # prefill + décodage KV-cache
+    assert seen and all(p == 0.0 for p in seen)
+
+
+@pytest.mark.parametrize("attn_dropout,stochastic", [(0.0, False), (0.5, True)])
+def test_manual_attention_path_uses_attn_dropout(attn_dropout, stochastic):
+    """Sans SDPA : seul nn.Dropout(attn_dropout) agit sur les poids d'attention."""
+    torch.manual_seed(0)
+    m = nanoPOPIXA(_tiny_config(n_layer=1, dropout=0.0, attn_dropout=attn_dropout))
+    _set_flash(m, False)
+    m.train()
+    idx = torch.randint(0, 65, (1, 16))
+    a, _ = m(idx, idx)
+    b, _ = m(idx, idx)
+    assert torch.equal(a, b) != stochastic
+
+
+def test_config_pickled_without_attn_dropout_still_loads(tmp_path):
+    """Checkpoints 2.1/2.2 : POPIXAConfig picklé sous model.POPIXAConfig, sans attn_dropout."""
+    old = _tiny_config(dropout=0.1)
+    del old.__dict__["attn_dropout"]                            # objet tel que picklé avant la 2.3
+    path = tmp_path / "checkpoint.pt"
+    torch.save({"config": old}, str(path))
+    cfg = torch.load(str(path), map_location="cpu", weights_only=False)["config"]
+    assert type(cfg) is POPIXAConfig and "attn_dropout" not in vars(cfg)
+    m = nanoPOPIXA(cfg)
+    assert m.transformer.h[0].attn.attn_dropout_p == 0.0
+    assert m.transformer.h[0].attn.resid_dropout.p == 0.1
+    # Config sans défaut de classe (objet quelconque) : le getattr de l'attention suffit
+    ns = SimpleNamespace(**vars(cfg))
+    assert not hasattr(ns, "attn_dropout")
+    assert nanoPOPIXA(ns).transformer.h[0].attn.attn_dropout_p == 0.0
