@@ -28,13 +28,14 @@ Token Embedding (wte, weight-tied avec lm_head)
 |---|---|
 | `model.py` | Architecture : `POPIXAConfig`, `SIZE_PRESETS`, couches, `nanoPOPIXA` (init, forward) ; ré-exporte `KVCache`, `_Decoder`… |
 | `generation.py` | Génération : `GenerationMixin` hérité par `nanoPOPIXA` (sampling, generate, generate_stream, thinking, speculative, structured), `KVCache`, `_Decoder` — n'importe pas `model` |
-| `train.py` | Boucle d'entraînement, LR scheduling cosine+warmup |
+| `train.py` | Boucle d'entraînement : cosine+warmup, memmap, autocast (`--dtype`), best.pt, `--patience`, `--run` |
+| `checkpoint.py` | Format de checkpoint 2 (types simples) : `save_checkpoint` atomique, `load_checkpoint` sûr (`weights_only=True`) |
 | `chat.py` | CLI interactif, effort levels, thinking blocks, KV-cache persistant |
 | `session_cache.py` | Sérialisation/restauration du KV-cache entre sessions (format v3 : ids exacts + historique) |
 | `structured.py` | Structured outputs : matcher JSON Schema octet par octet, masques de tokens, complétion la plus courte |
 | `popixa_eval.py` | `popixa eval` (bpb, paires minimales FR, échantillons → eval.json) + `popixa bench` |
 | `evals/` | `fr_paires.jsonl` (généré par `build_paires.py` depuis `paires/*.py`), `prompts_fr.txt`, `BASELINES.md` |
-| `tests/` | Suite pytest (modèle, session, chat, structured, eval) — lancée par la CI |
+| `tests/` | Suite pytest (modèle, session, chat, structured, eval, checkpoint, train) — lancée par la CI |
 | `data_prep.py` | Téléchargement + tokenisation (tiktoken BPE ou char-level) |
 | `popixa_cli.py` | Point d'entrée `popixa` avec shell interactif |
 
@@ -159,6 +160,25 @@ EFFORT_PRESETS = {
 - **`train.py --resume`** sans `--size` → réglages enregistrés dans `ckpt["train"]` (size, batch,
   max_iters, lr, warmup), sinon taille déduite de l'architecture (`_size_of`) ; garde MPS testée sur
   l'architecture effective
+
+## Implémenté — v2.3 « Socle »
+
+- **Checkpoints format 2** (`checkpoint.py`) : `{"format": 2, "model", "config": dict, "iter", "tokenizer",
+  "vocab"?, "optimizer"?, "train", "best_val", "best_iter", …}` — JAMAIS d'objet picklé ; charger avec
+  `load_checkpoint` (jamais `torch.load` direct) ; anciens checkpoints : seule `POPIXAConfig` autorisée
+- **train.py** :
+  - données `np.memmap` (uint16) → `get_batch` empile des tranches ; mode `input.txt` en numpy en RAM
+  - AdamW : 2 groupes (dim ≥ 2 → weight_decay 0.1 ; RMSNorm → 0), betas (0.9, 0.95)
+  - `estimate_loss` : `_eval_gen` re-seedé (`seed + 1`) à chaque évaluation → mêmes batchs ; les batchs
+    d'entraînement ont leur propre générateur (`_batch_gen`, reprise : `seed + iter`)
+  - `best.pt` (sans optimizer) à chaque amélioration de la val loss ; `--patience N` → arrêt anticipé,
+    `stopped_early` dans checkpoint.pt (`--resume` ne repart pas sauf `--patience` explicite)
+  - `--dtype auto` : bfloat16 (sinon float16 + GradScaler) sur CUDA, float32 ailleurs ; autocast partagé
+    entraînement / éval
+  - `--run NOM` ≡ `--out_dir runs/NOM` ; `train.log` et `run.json` DANS le dossier ; `--eval` → eval.json
+  - réglages repris par `--resume` : `ckpt["train"]` (size, batch, max_iters, lr, warmup, patience,
+    grad_accum, dtype)
+- **CLI** : `popixa runs`, `popixa monitor --run`, `popixa bench --dtype`
 
 ## Ce qui reste à implémenter (backlog)
 

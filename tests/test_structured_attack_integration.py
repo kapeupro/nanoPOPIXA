@@ -1354,10 +1354,22 @@ def test_r3_load_schema_from_named_fifo(tmp_path):
     try:
         assert structured.load_schema(fifo) == SCHEMAS[15]
     finally:
-        if t.is_alive():                 # débloque l'écrivain si le tube n'a pas été lu
-            with open(fifo, "r", encoding="utf-8") as f:
-                f.read()
+        # Écrivain encore bloqué sur open() si le tube n'a pas été lu : un lecteur NON bloquant
+        # le libère. (Un open() bloquant ici attendait à jamais quand l'écrivain, encore vivant
+        # quelques instants après la lecture, ne rouvrirait plus le tube.)
         t.join(timeout=5)
+        if t.is_alive():
+            import time
+            fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+            try:
+                deadline = time.time() + 5
+                while t.is_alive() and time.time() < deadline:
+                    try:
+                        os.read(fd, 65536)
+                    except BlockingIOError:
+                        time.sleep(0.01)
+            finally:
+                os.close(fd)
 
 
 @pytest.mark.parametrize("how", ["process-substitution", "stdin-pipe"])
