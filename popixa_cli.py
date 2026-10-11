@@ -236,11 +236,16 @@ def _default_log(run: str = None) -> str:
     if run:
         return os.path.join("runs", run, "train.log")
     import glob
+    def mtime(path):
+        try:
+            return os.path.getmtime(path)
+        except OSError:                          # supprimé entre-temps
+            return -1.0
     candidates = [p for p in [os.path.join("out-nanopopixa", "train.log"), "train.log",
-                              *glob.glob(os.path.join("runs", "*", "train.log"))] if os.path.exists(p)]
+                              *glob.glob(os.path.join("runs", "*", "train.log"))] if mtime(p) >= 0]
     if not candidates:
         return os.path.join("out-nanopopixa", "train.log")
-    return max(candidates, key=os.path.getmtime)
+    return max(candidates, key=mtime)
 
 
 def cmd_monitor(args):

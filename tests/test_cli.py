@@ -126,3 +126,16 @@ def test_default_log_follows_the_most_recent_training(tmp_path, monkeypatch):
     assert popixa_cli._default_log() == os.path.join("runs", "a", "train.log")
     os.utime(new, (2_100_000_000, 2_100_000_000))                     # un nouvel entraînement démarre
     assert popixa_cli._default_log() == os.path.join("out-nanopopixa", "train.log")
+
+
+def test_monitor_does_not_flip_between_active_runs(tmp_path):
+    a, b = tmp_path / "a.log", tmp_path / "b.log"
+    for p in (a, b):
+        p.write_text("", encoding="utf-8")
+    now = __import__("time").time()
+    os.utime(a, (now, now))                               # suivi et actif
+    assert monitor._follow(str(a), lambda: str(b)) == str(a)
+    os.utime(a, (now - 3600, now - 3600))                 # suivi immobile depuis 1 h → on bascule
+    assert monitor._follow(str(a), lambda: str(b)) == str(b)
+    a.unlink()                                            # suivi disparu → on bascule
+    assert monitor._follow(str(a), lambda: str(b)) == str(b)

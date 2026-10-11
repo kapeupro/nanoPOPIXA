@@ -58,7 +58,7 @@ def _truncated_checkpoint(tmp_path):
 
 
 @pytest.mark.parametrize("content,match", [(b"pas un checkpoint", "illisible"), (b"", "vide"),
-                                           ("tronque", "corrompu ou tronqué|illisible")])
+                                           ("tronque", "corrompu ou tronqué")])
 def test_corrupt_or_empty_files_give_clear_errors(tmp_path, content, match):
     path = tmp_path / "bad.pt"
     path.write_bytes(_truncated_checkpoint(tmp_path) if content == "tronque" else content)

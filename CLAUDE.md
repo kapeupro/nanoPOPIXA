@@ -182,13 +182,13 @@ EFFORT_PRESETS = {
     max_iters, lr, warmup, patience, grad_accum, weight_decay, beta2, dropout, attn_dropout) — PAS le
     dtype (propre à la machine : `--dtype auto` à chaque lancement) ; `--weight_decay` / `--beta2` à la
     reprise sont réappliqués aux groupes de l'optimiseur (load_state_dict remet les anciens)
-  - best.pt jamais écrit à l'évaluation initiale ; à la reprise, vérifié contre (best_iter, best_val)
-    du checkpoint (restauré si le meilleur point est le checkpoint, sinon réécrit plus tard) ; un
-    best.pt d'un autre run est supprimé à la 1re sauvegarde (copie dans best.prev.pt)
-  - nouvel entraînement : checkpoint.pt / best.pt COPIÉS en *.prev.pt ; rien d'autre ne change dans le
-    dossier avant la 1re sauvegarde (`_commit_launch` : train.log, run.json « en cours », eval.json →
-    *.prev) → interrompu avant, le dossier reste celui du run précédent ; run.json « interrompu » /
-    « erreur » si la boucle ou la sauvegarde finale échoue après engagement
+  - best.pt jamais écrit à l'évaluation initiale ; écrit APRÈS checkpoint.pt ; à la reprise, vérifié
+    contre (best_iter, best_val) du checkpoint : restauré (écriture directe, sans engager) si le meilleur
+    point est le checkpoint, sinon réécrit à la prochaine évaluation
+  - lancements transactionnels : un nouveau run dans un dossier occupé déplace les `RUN_FILES` du run
+    précédent dans `prev.new/` ; 1re sauvegarde (`_commit_launch`) → `prev.new/` devient `prev/` ;
+    interruption / erreur avant → `_rollback_launch` remet le run précédent à l'identique (aussi au
+    lancement suivant si le processus a été tué) ; run.json « interrompu » / « erreur » sinon
 - **CLI** : `popixa runs`, `popixa monitor --run`, `popixa bench --dtype`
 
 ## Ce qui reste à implémenter (backlog)

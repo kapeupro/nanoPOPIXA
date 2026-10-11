@@ -50,7 +50,7 @@ def test_train_save_resume_and_chat(tmp_path):
 
     # Nouvel entraînement : l'ancien modèle est sauvegardé, jamais écrasé en silence
     r = _train(tmp_path, "--max_iters", "2")
-    assert r.returncode == 0 and (tmp_path / "out-nanopopixa" / "checkpoint.prev.pt").exists()
+    assert r.returncode == 0 and (tmp_path / "out-nanopopixa" / "prev" / "checkpoint.pt").exists()
 
     # Le checkpoint produit est utilisable par le chat
     sys.path.insert(0, ROOT)
@@ -328,10 +328,11 @@ def _interrupt_after(tmp_path, marker, *args):
             out.append(line)
             if marker in line:
                 seen.set()
+        seen.set()                          # fin de sortie (processus terminé) : ne pas attendre 300 s
     t = threading.Thread(target=reader, daemon=True)
     t.start()
     try:
-        assert seen.wait(timeout=300), "".join(out)
+        assert seen.wait(timeout=300) and marker in "".join(out) and p.poll() is None, "".join(out)
         p.send_signal(signal.SIGINT)
         p.wait(timeout=120)
     finally:
@@ -359,8 +360,30 @@ def test_new_run_interrupted_before_first_save_leaves_folder_unchanged(tmp_path)
     before = {n: (run / n).read_bytes() for n in ("run.json", "train.log", "eval.json", "best.pt",
                                                     "checkpoint.pt")}
     out = _interrupt_after(tmp_path, "iter     0", "--max_iters", "100000", "--seed", "9")   # run B
-    assert "inchangé" in out
+    assert "remis en place" in out
     for name, content in before.items():
         assert (run / name).read_bytes() == content, name
+    assert not (run / "prev.new").exists() and not (run / "prev").exists()
     r = _train(tmp_path, "--resume", size=None)                                      # reprend A, cohérent
     assert r.returncode == 0 and "déjà terminé" in r.stdout and "autre entraînement" not in r.stdout
+
+
+def test_new_run_moves_previous_run_to_prev_and_recovers_after_kill(tmp_path):
+    """Nouveau run dans un dossier occupé : le précédent passe dans prev/ à la 1re sauvegarde ;
+    un lancement tué brutalement (prev.new/ resté) est rétabli au lancement suivant."""
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2", "--seed", "1").returncode == 0      # run A
+    run = tmp_path / "out-nanopopixa"
+    a_ckpt = (run / "checkpoint.pt").read_bytes()
+    assert _train(tmp_path, "--max_iters", "2", "--seed", "2").returncode == 0      # run B
+    assert (run / "prev" / "checkpoint.pt").read_bytes() == a_ckpt and not (run / "prev.new").exists()
+    b_files = {n: (run / n).read_bytes() for n in ("checkpoint.pt", "train.log", "run.json")}
+    # Simule un lancement C tué (SIGKILL) avant sa 1re sauvegarde : B dans prev.new/, débris de C
+    (run / "prev.new").mkdir()
+    for n in b_files:
+        os.replace(run / n, run / "prev.new" / n)
+    (run / "train.log").write_text("# débris du lancement tué\n", encoding="utf-8")
+    r = _train(tmp_path, "--resume", size=None)                                      # B est rétabli
+    assert r.returncode == 0 and "restauré" in r.stdout, r.stdout + r.stderr
+    for n, content in b_files.items():
+        assert (run / n).read_bytes() == content, n

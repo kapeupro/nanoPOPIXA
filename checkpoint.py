@@ -17,6 +17,7 @@ La prochaine sauvegarde (popixa train --resume) les réécrit au format 2.
 """
 
 import os
+import errno
 import dataclasses
 
 import torch
@@ -105,27 +106,17 @@ def load_checkpoint(path: str, map_location="cpu", log=print) -> dict:
         raise
     except EOFError:
         raise ValueError(f"checkpoint {path} vide ou tronqué") from None
-    except PermissionError as e:
+    except OSError as e:
+        if e.errno == errno.EINVAL:                    # archive tronquée ou abîmée
+            raise ValueError(f"checkpoint {path} illisible : fichier corrompu ou tronqué") from None
         raise ValueError(f"checkpoint {path} illisible : {e.strerror or e}") from None
-    except OSError:                                   # EINVAL… : archive tronquée ou abîmée
-        raise ValueError(f"checkpoint {path} illisible : fichier corrompu ou tronqué") from None
     except Exception as first:
+        if "zip archive" in str(first) or "central directory" in str(first):   # archive tronquée
+            raise ValueError(f"checkpoint {path} illisible : fichier corrompu ou tronqué") from None
         # Ancien format (POPIXAConfig picklée) — ou fichier corrompu / piégé
         if "POPIXAConfig" not in str(first):
             raise _refused(path, first) from None
-        try:
-            ckpt, safe = _load_legacy(path, map_location)
-        except _NeedsTrust:
-            raise ValueError(
-                f"checkpoint {path} : ancien format (≤ 2.2), lisible en mode sûr avec PyTorch ≥ 2.4 "
-                f"seulement — mets PyTorch à jour ou, si ce fichier vient de toi, relance avec "
-                f"{TRUST_ENV}=1 (il sera réécrit au format 2 à la prochaine reprise)") from None
-        except EOFError:
-            raise ValueError(f"checkpoint {path} vide ou tronqué") from None
-        except Exception as second:
-            raise _refused(path, second) from None
-        if not safe:
-            log(f"⚠️  {path} : ancien format chargé SANS protection ({TRUST_ENV}=1, PyTorch < 2.4)")
+        ckpt = _load_legacy_or_raise(path, map_location, log)
     if not isinstance(ckpt, dict):
         raise ValueError(f"checkpoint {path} : contenu inattendu ({type(ckpt).__name__})")
     if isinstance(ckpt.get("format"), int) and ckpt["format"] > FORMAT:
@@ -133,4 +124,22 @@ def load_checkpoint(path: str, map_location="cpu", log=print) -> dict:
             "les champs inconnus sont ignorés")
     if ckpt.get("config") is not None:
         ckpt["config"] = config_from(ckpt["config"])
+    return ckpt
+
+
+def _load_legacy_or_raise(path: str, map_location, log):
+    """Ancien format : chargement restreint à POPIXAConfig, ou erreur claire."""
+    try:
+        ckpt, safe = _load_legacy(path, map_location)
+    except _NeedsTrust:
+        raise ValueError(
+            f"checkpoint {path} : ancien format (≤ 2.2), lisible en mode sûr avec PyTorch ≥ 2.4 "
+            f"seulement — mets PyTorch à jour ou, si ce fichier vient de toi, relance avec "
+            f"{TRUST_ENV}=1 (il sera réécrit au format 2 à la prochaine reprise)") from None
+    except EOFError:
+        raise ValueError(f"checkpoint {path} vide ou tronqué") from None
+    except Exception as second:
+        raise _refused(path, second) from None
+    if not safe:
+        log(f"⚠️  {path} : ancien format chargé SANS protection ({TRUST_ENV}=1, PyTorch < 2.4)")
     return ckpt

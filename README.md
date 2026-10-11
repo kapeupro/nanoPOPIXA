@@ -164,6 +164,9 @@ Chaque entraînement écrit dans son dossier (`out-nanopopixa/` par défaut, `ru
 | `run.json` | réglages et résultats de l'expérience (lus par `popixa runs`) |
 | `eval.json`, `samples.md` | avec `--eval` : `popixa eval` lancé sur `best.pt` en fin d'entraînement |
 
+Un nouvel entraînement dans un dossier déjà utilisé met l'ancien run de côté dans `prev/` (à sa première
+sauvegarde) ; arrêté avant, il remet l'ancien run en place à l'identique — rien n'est perdu.
+
 La val loss est mesurée sur **les mêmes batchs à chaque évaluation** : deux points de la courbe sont
 comparables, `best.pt` et l'arrêt anticipé ne dépendent pas du hasard du tirage.
 

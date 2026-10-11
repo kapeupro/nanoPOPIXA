@@ -398,6 +398,25 @@ def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.l
 
 
 # ─── Boucle principale ────────────────────────────────────────────────────────
+STALE_LOG_S = 60     # un log suivi immobile depuis plus longtemps cède la place au plus récent
+
+
+def _follow(current: str, resolve) -> str:
+    """Log à afficher : le plus récent selon resolve(), mais on ne quitte le log suivi que s'il
+    ne bouge plus (sinon, avec deux entraînements en parallèle, on alternerait de l'un à l'autre)."""
+    try:
+        candidate = os.path.abspath(resolve())
+    except OSError:
+        return current
+    if candidate == current:
+        return current
+    try:
+        idle = time.time() - os.path.getmtime(current)
+    except OSError:
+        idle = float("inf")                      # log suivi disparu
+    return candidate if idle > STALE_LOG_S else current
+
+
 def run_monitor(log_path: str, refresh: float, resolve=None):
     """resolve : fonction rappelée à chaque rafraîchissement pour choisir le log (sans --log ni
     --run, on suit ainsi l'entraînement lancé APRÈS le monitor)."""
@@ -407,7 +426,7 @@ def run_monitor(log_path: str, refresh: float, resolve=None):
     try:
         while True:
             if resolve is not None:
-                abs_path = os.path.abspath(resolve())
+                abs_path = _follow(abs_path, resolve)
             entries, max_iters, eval_interval, batch_size, block_size = parse_log(abs_path)
             try:
                 cols = os.get_terminal_size().columns

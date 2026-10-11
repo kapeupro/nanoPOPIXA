@@ -28,6 +28,8 @@ mémoire, reproductible et sûr. Chaque changement est mesuré avec `popixa benc
 - **Validation sur des batchs fixes** : les val loss successives sont comparables entre elles.
 - `train.log` est écrit dans le dossier de l'expérience (`out-nanopopixa/train.log` par défaut) ;
   `popixa monitor` suit par défaut le `train.log` le plus récent.
+- Nouvel entraînement dans un dossier déjà utilisé : l'ancien run passe dans `prev/` (au lieu de
+  `checkpoint.prev.pt`) à la première sauvegarde ; arrêté avant, l'ancien run est remis en place.
 - `--resume` reprend aussi la graine et les batchs d'évaluation du run (val loss comparables),
   et applique à l'optimiseur les `--weight_decay` / `--beta2` demandés.
 - `popixa train` transmet enfin les options valant 0 (`--seed 0`, `--dropout 0`, `--patience 0`…).

@@ -105,6 +105,33 @@ best_path = os.path.join(out_dir, "best.pt")            # meilleure val loss (ch
 log_path  = os.path.join(out_dir, "train.log")
 run_path  = os.path.join(out_dir, "run.json")
 
+# ── Lancements transactionnels ────────────────────────────────────────────────
+# Un NOUVEL entraînement dans un dossier occupé met d'abord tout le run précédent de côté
+# (prev.new/) ; à sa 1re sauvegarde, prev.new/ devient prev/ (engagé). Interrompu ou planté
+# avant, le run précédent est remis en place à l'identique (même après un arrêt brutal :
+# rétabli au lancement suivant).
+RUN_FILES   = ("checkpoint.pt", "best.pt", "train.log", "run.json", "eval.json", "samples.md")
+prev_dir    = os.path.join(out_dir, "prev")
+staging_dir = os.path.join(out_dir, "prev.new")
+
+
+def _rollback_launch() -> bool:
+    """Remet en place le run mis de côté dans prev.new/ ; True s'il y en avait un."""
+    if not os.path.isdir(staging_dir):
+        return False
+    for name in RUN_FILES:
+        cur = os.path.join(out_dir, name)
+        if os.path.exists(cur):
+            os.remove(cur)                 # fichiers du lancement avorté
+    for name in os.listdir(staging_dir):
+        os.replace(os.path.join(staging_dir, name), os.path.join(out_dir, name))
+    os.rmdir(staging_dir)
+    return True
+
+
+if _rollback_launch():
+    print(f"♻️  Lancement précédent arrêté avant sa 1re sauvegarde : run d'avant restauré dans {out_dir}/")
+
 resume_ckpt = None
 if args.resume:
     if os.path.exists(ckpt_path):
@@ -482,6 +509,7 @@ if resume_ckpt is not None:
     # best.pt doit venir de CE run : sinon (absent, ou laissé par un autre entraînement interrompu
     # dans le même dossier) on repart de zéro pour que la prochaine évaluation le réécrive
     _ckpt_best_iter = best_iter
+    _nothing_to_do = (bool(resume_ckpt.get("stopped_early")) and args.patience is None) or iter_start >= max_iters
     if best_iter is not None:
         try:
             _best = load_checkpoint(best_path, map_location="cpu")
@@ -493,7 +521,8 @@ if resume_ckpt is not None:
             _restore_best = True          # meilleur point = ce checkpoint : mêmes poids, on le réécrit
         elif not _same:
             print(f"⚠️  {best_path} absent ou d'un autre entraînement"
-                  + (" : il sera réécrit à la prochaine évaluation" if iter_start < max_iters else ""))
+                  + (" (impossible à reconstruire : son meilleur point n'est pas le dernier checkpoint)"
+                     if _nothing_to_do else " : il sera réécrit à la prochaine évaluation"))
             best_val, best_iter = float("inf"), None
     bad_evals  = resume_ckpt.get("bad_evals", 0) if args.patience is None else 0
     _batch_gen.manual_seed(seed + iter_start)
@@ -508,17 +537,14 @@ if resume_ckpt is not None:
     del resume_ckpt
 else:
     best_val, best_iter, bad_evals = float("inf"), None, 0
-    # Nouvel entraînement : on ne détruit jamais silencieusement un modèle existant
-    # (copie, pas déplacement : checkpoint.pt et best.pt restent ceux du même run tant que ce nouvel
-    #  entraînement n'a rien sauvegardé — un Ctrl+C puis --resume reprend un état cohérent)
-    import shutil
-    for _name in ("checkpoint", "best"):
-        _old = os.path.join(out_dir, f"{_name}.pt")
-        if os.path.exists(_old):
-            backup = os.path.join(out_dir, f"{_name}.prev.pt")
-            shutil.copy2(_old, backup)
-            print(f"💾 {_name}.pt existant sauvegardé → {backup}"
-                  + ("  (--resume pour reprendre au lieu de repartir de 0)" if _name == "checkpoint" else ""))
+    # Nouvel entraînement : on ne détruit jamais silencieusement un run existant (voir plus haut)
+    _old = [n for n in RUN_FILES if os.path.exists(os.path.join(out_dir, n))]
+    if _old:
+        os.makedirs(staging_dir)
+        for name in _old:
+            os.replace(os.path.join(out_dir, name), os.path.join(staging_dir, name))
+        print(f"📦 Run précédent mis de côté → {prev_dir}/ ({', '.join(_old)}) — restauré si ce lancement "
+              "s'arrête avant sa 1re sauvegarde ; --resume pour reprendre au lieu de repartir de 0")
 
 
 def _payload(it: int) -> dict:
@@ -548,7 +574,7 @@ def save_checkpoint(it: int, stopped_early: bool = False) -> None:
     """checkpoint.pt : modèle + optimizer (pour --resume). it = itérations effectuées."""
     _commit_launch()
     if best_iter is None and os.path.exists(best_path):
-        os.remove(best_path)        # best.pt d'un autre run (copie dans best.prev.pt) : jamais mélangé
+        os.remove(best_path)        # best.pt d'un autre run (reprise) : jamais mélangé avec celui-ci
     payload = _payload(it)
     payload.update(optimizer=optimizer.state_dict(), bad_evals=bad_evals, stopped_early=stopped_early)
     _write_checkpoint(ckpt_path, payload)
@@ -597,38 +623,38 @@ print(f"\n🚀 Démarrage entraînement nanoPOPIXA [{size}] → {out_dir}/\n")
 t0     = time.time()
 t_last = t0
 
-# Log propre à chaque run ; en reprise on AJOUTE un en-tête (le monitor garde le dernier :
-# max_iters / batch peuvent avoir changé)
-# Un NOUVEL entraînement ne modifie le dossier (train.log, run.json, eval.json) qu'à sa première
-# sauvegarde : interrompu avant, le dossier reste entièrement celui du run précédent (checkpoint.pt,
-# best.pt, journaux), cohérent pour un --resume. Une reprise s'engage tout de suite (même run).
-_committed   = False
-_pending_log = []
+# Log propre à chaque run (écrit dès le lancement : popixa monitor le suit tout de suite) ;
+# en reprise on AJOUTE un en-tête (le monitor garde le dernier : max_iters / batch peuvent changer)
+_committed = resume_ckpt_loaded or not os.path.isdir(staging_dir)
 
 
 def _commit_launch() -> None:
+    """1re sauvegarde d'un nouveau run : le run précédent mis de côté devient prev/."""
     global _committed
     if _committed:
         return
     _committed = True
-    # Les poids vont changer : l'évaluation d'un lancement précédent ne les décrit plus
-    for _old in ("eval.json", "samples.md"):
-        _path = os.path.join(out_dir, _old)
-        if os.path.exists(_path):
-            _stem, _ext = os.path.splitext(_old)
-            os.replace(_path, os.path.join(out_dir, f"{_stem}.prev{_ext}"))
+    import shutil
+    if os.path.isdir(prev_dir):
+        shutil.rmtree(prev_dir)
+    os.replace(staging_dir, prev_dir)
+
+
+if iter_start < max_iters:
+    if resume_ckpt_loaded:
+        # Les poids vont changer : l'évaluation d'un lancement précédent ne les décrit plus
+        for _old_eval in ("eval.json", "samples.md"):
+            _path = os.path.join(out_dir, _old_eval)
+            if os.path.exists(_path):
+                _stem, _ext = os.path.splitext(_old_eval)
+                os.replace(_path, os.path.join(out_dir, f"{_stem}.prev{_ext}"))
     with open(log_path, "a" if resume_ckpt_loaded else "w", encoding="utf-8") as f:
         f.write(f"# max_iters={max_iters} eval_interval={eval_interval}"
                 f" batch_size={batch_size * gradient_accumulation_steps} block_size={block_size}\n")
-        f.writelines(_pending_log)
-    _pending_log.clear()
     write_run_json(status="en cours")
-
-
-if iter_start < max_iters and resume_ckpt_loaded:
-    _commit_launch()
 if _restore_best:
-    save_best(best_iter, best_val)
+    # Mêmes poids que checkpoint.pt : écriture directe, sans engager de lancement
+    _write_checkpoint(best_path, dict(_payload(best_iter), val_loss=best_val))
     print(f"♻️  {best_path} restauré depuis le checkpoint (meilleur point = dernier checkpoint)")
 
 
@@ -638,22 +664,20 @@ def log_eval(it: int, losses: dict, lr: float, dt: float, pct: float) -> None:
     filled = int(30 * pct)
     print(f"[{'█' * filled + '░' * (30 - filled)}] {pct:5.1%}  {log_line}"
           + ("  ★ best.pt" if best_iter == it else ""))
-    if not _committed:
-        _pending_log.append(log_line + "\n")       # écrit dans train.log à la 1re sauvegarde
-        return
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(log_line + "\n")
 
 
-def track_best(it: int, val: float) -> bool:
-    """Met à jour best.pt ; retourne True si l'arrêt anticipé doit se déclencher."""
+def track_best(it: int, val: float) -> tuple:
+    """Met à jour le meilleur point ; retourne (amélioré, arrêt anticipé). L'appelant écrit
+    checkpoint.pt PUIS best.pt : interrompu entre les deux, la reprise restaure best.pt depuis
+    le checkpoint (meilleur point = dernier checkpoint)."""
     global best_val, best_iter, bad_evals
     if val < best_val:
         best_val, best_iter, bad_evals = val, it, 0
-        save_best(it, val)
-        return False
+        return True, False
     bad_evals += 1
-    return patience > 0 and bad_evals >= patience
+    return False, patience > 0 and bad_evals >= patience
 
 
 stopped_early = False
@@ -671,12 +695,13 @@ try:
             losses = estimate_loss(model)
             now, dt = time.time(), time.time() - t_last
             t_last = now
-            # Le modèle initial n'est jamais « meilleur » : best.pt ne précède pas le 1er checkpoint.pt
-            stop = track_best(it, losses["val"]) if it > iter_start else False
+            # Le modèle initial n'est jamais « meilleur » ; sauvegardes inutiles avant le 1er pas
+            improved, stop = track_best(it, losses["val"]) if it > iter_start else (False, False)
             log_eval(it, losses, lr, dt, it / max_iters)
-            # Sauvegarde checkpoint (+ optimizer pour --resume) — inutile avant le 1er pas
             if it > iter_start:
                 save_checkpoint(it, stopped_early=stop)
+                if improved:
+                    save_best(it, losses["val"])
             if stop:
                 stopped_early = True
                 print(f"\n⏹  Arrêt anticipé : {patience} évaluations sans amélioration de la val loss "
@@ -702,17 +727,19 @@ try:
     # les sessions de chat, restent valides)
     if iter_start < max_iters and not stopped_early:
         losses = estimate_loss(model)
-        track_best(max_iters, losses["val"])
+        improved, _ = track_best(max_iters, losses["val"])
         log_eval(max_iters, losses, get_lr(max_iters), time.time() - t_last, 1.0)
         save_checkpoint(max_iters)
+        if improved:
+            save_best(max_iters, losses["val"])
 except BaseException as e:   # Ctrl+C, manque de mémoire, NaN… : run.json ne reste pas « en cours »
-    if _committed:
+    if not _committed and _rollback_launch():
+        print(f"\n⏹  Arrêt avant la première sauvegarde : le run précédent est remis en place dans {out_dir}/")
+    else:
         write_run_json(status="interrompu" if isinstance(e, KeyboardInterrupt) else f"erreur ({type(e).__name__})",
                        last_iter=it, best_iter=best_iter,
                        best_val=None if math.isinf(best_val) else round(best_val, 6),
                        duration_s=round(time.time() - t0, 1))
-    else:
-        print(f"\n⏹  Interrompu avant la première sauvegarde : {out_dir}/ est inchangé")
     raise
 
 if iter_start < max_iters:
