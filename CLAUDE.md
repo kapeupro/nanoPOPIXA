@@ -168,7 +168,9 @@ EFFORT_PRESETS = {
   `load_checkpoint` (jamais `torch.load` direct) ; anciens checkpoints : seule `POPIXAConfig` autorisée
 - **train.py** :
   - données `np.memmap` (uint16) → `get_batch` empile des tranches ; mode `input.txt` en numpy en RAM
-  - AdamW : 2 groupes (dim ≥ 2 → weight_decay 0.1 ; RMSNorm → 0), betas (0.9, 0.95)
+  - AdamW : 2 groupes (dim ≥ 2 → weight_decay 0.1 ; RMSNorm → 0), betas (0.9, 0.999) — 0.95 mesuré
+    moins bon (ablations dans evals/BASELINES.md) ; réglages experts `--lr --weight_decay --beta2
+    --dropout --attn_dropout` (`_hp` : option > réglage du run repris > défaut)
   - `estimate_loss` : `_eval_gen` re-seedé (`seed + 1`) à chaque évaluation → mêmes batchs ; les batchs
     d'entraînement ont leur propre générateur (`_batch_gen`, reprise : `seed + iter`)
   - `best.pt` (sans optimizer) à chaque amélioration de la val loss ; `--patience N` → arrêt anticipé,

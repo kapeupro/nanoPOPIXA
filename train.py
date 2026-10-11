@@ -67,7 +67,7 @@ parser.add_argument("--eval_iters",    type=int, default=10,  help="Batchs par �
 # Réglages experts (expériences, ablations) — par défaut ceux du preset ; en reprise, ceux du run
 parser.add_argument("--lr",           type=float, default=None, help="Learning rate maximal (défaut : preset)")
 parser.add_argument("--weight_decay", type=float, default=None, help="Weight decay des matrices (défaut 0.1)")
-parser.add_argument("--beta2",        type=float, default=None, help="beta2 d'AdamW (défaut 0.95)")
+parser.add_argument("--beta2",        type=float, default=None, help="beta2 d'AdamW (défaut 0.999)")
 parser.add_argument("--dropout",      type=float, default=None,
                     help="Dropout embeddings / résiduels / MLP (défaut 0.1)")
 parser.add_argument("--attn_dropout", type=float, default=None,
@@ -193,7 +193,9 @@ min_lr     = learning_rate / 10
 lr_decay_iters  = max_iters
 grad_clip       = 1.0
 weight_decay    = _hp("weight_decay", 0.1)   # sur les matrices seulement (pas les RMSNorm)
-betas           = (0.9, _hp("beta2", 0.95))
+# beta2 = 0.999 (défaut PyTorch) : mesuré en 2.3 (evals/BASELINES.md), 0.95 — courant pour les grands
+# LLM — coûte ≈ 0.08 bit par octet sur nano / Hugo (6 à 8 fois le bruit d'une graine à l'autre)
+betas           = (0.9, _hp("beta2", 0.999))
 
 # Évaluation — toutes les eval_interval iters, moyenne sur eval_iters batchs (fixes)
 eval_interval   = args.eval_interval

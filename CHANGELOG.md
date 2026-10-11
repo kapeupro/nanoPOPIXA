@@ -15,15 +15,16 @@ mémoire, reproductible et sûr. Chaque changement est mesuré avec `popixa benc
 - **`best.pt`** (poids à la meilleure val loss) et **arrêt anticipé** `--patience N`.
 - **Précision mixte** `--dtype auto|float32|bfloat16|float16` (auto : bfloat16 sur GPU CUDA) ;
   `popixa bench --dtype` pour mesurer avant d'adopter une précision réduite.
-- `--grad_accum N`, `--eval_interval`, `--eval_iters`.
+- `--grad_accum N`, `--eval_interval`, `--eval_iters` ; réglages experts `--lr`, `--weight_decay`,
+  `--beta2`, `--dropout`, `--attn_dropout` (ablations, repris par `--resume`).
 - **`checkpoint.py`** : format de checkpoint 2, chargé avec `weights_only=True`.
 
 ### Modifié
 - **Dropout d'attention supprimé** (`attn_dropout = 0`, le dropout résiduel reste à 0.1) : sur
   CPU / Mac, un dropout dans `scaled_dot_product_attention` forçait l'implémentation lente.
 - **Données en memmap** : `train.bin` n'est plus chargé en RAM.
-- **Weight decay 0.1 sur les seules matrices** (il s'appliquait aussi aux poids des RMSNorm),
-  betas AdamW (0.9, 0.95).
+- **Weight decay 0.1 sur les seules matrices** (il s'appliquait aussi aux poids des RMSNorm).
+  betas AdamW inchangés (0.9, 0.999) : 0.95, essayé, coûtait ≈ 0.08 bit par octet (mesuré).
 - **Validation sur des batchs fixes** : les val loss successives sont comparables entre elles.
 - `train.log` est écrit dans le dossier de l'expérience (`out-nanopopixa/train.log` par défaut).
 - **`model.py` découpé** : l'architecture reste dans `model.py`, toute la génération passe dans
