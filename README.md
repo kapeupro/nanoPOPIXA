@@ -169,7 +169,8 @@ comparables, `best.pt` et l'arrêt anticipé ne dépendent pas du hasard du tira
 
 Les checkpoints sont au **format 2** : uniquement des tenseurs et des types simples, chargés avec
 `torch.load(weights_only=True)` — ouvrir un checkpoint téléchargé ne peut pas exécuter de code.
-Les checkpoints des versions précédentes restent lisibles (et sont réécrits au format 2 à la reprise).
+Les checkpoints des versions précédentes restent lisibles (et sont réécrits au format 2 à la reprise) ;
+avec PyTorch < 2.4, ils demandent l'accord explicite `POPIXA_TRUST_CHECKPOINTS=1` (à réserver à tes fichiers).
 
 > `--resume` reprend l'architecture du checkpoint et les réglages d'entraînement de son dernier
 > lancement (batch, LR, `max_iters`, `--batch_size` / `--max_iters` compris). Un `--batch_size` ou
@@ -341,7 +342,8 @@ temps pour 1 milliard de tokens d'entraînement sur ta machine.
 nanopopixa/
 ├── model.py       # Transformer v2 : RMSNorm · SwiGLU · RoPE · attention + KV-Cache (architecture)
 ├── generation.py  # Génération : sampling · streaming · thinking · speculative · structured
-├── train.py       # Boucle d'entraînement + LR scheduling
+├── train.py       # Entraînement : memmap · précision mixte · best.pt · arrêt anticipé · runs/
+├── checkpoint.py  # Format de checkpoint 2 : chargement sûr (weights_only=True)
 ├── chat.py        # REPL interactif : thinking blocks · effort levels · auto-compact
 ├── structured.py  # Structured outputs : matcher JSON Schema octet par octet + masques de tokens
 ├── session_cache.py # KV-cache persistant entre sessions

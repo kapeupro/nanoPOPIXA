@@ -178,8 +178,13 @@ EFFORT_PRESETS = {
   - `--dtype auto` : bfloat16 (sinon float16 + GradScaler) sur CUDA, float32 ailleurs ; autocast partagé
     entraînement / éval
   - `--run NOM` ≡ `--out_dir runs/NOM` ; `train.log` et `run.json` DANS le dossier ; `--eval` → eval.json
-  - réglages repris par `--resume` : `ckpt["train"]` (size, batch, max_iters, lr, warmup, patience,
-    grad_accum, dtype)
+  - réglages repris par `--resume` : `ckpt["train"]` (size, seed, eval_interval, eval_iters, batch,
+    max_iters, lr, warmup, patience, grad_accum, weight_decay, beta2, dropout, attn_dropout) — PAS le
+    dtype (propre à la machine : `--dtype auto` à chaque lancement) ; `--weight_decay` / `--beta2` à la
+    reprise sont réappliqués aux groupes de l'optimiseur (load_state_dict remet les anciens)
+  - best.pt jamais écrit à l'évaluation initiale ; à la reprise, vérifié contre (best_iter, best_val)
+    du checkpoint, sinon réécrit ; nouvel entraînement : checkpoint.pt / best.pt COPIÉS en *.prev.pt,
+    eval.json / samples.md déplacés en *.prev ; run.json « interrompu » / « erreur » si la boucle échoue
 - **CLI** : `popixa runs`, `popixa monitor --run`, `popixa bench --dtype`
 
 ## Ce qui reste à implémenter (backlog)
@@ -192,7 +197,7 @@ EFFORT_PRESETS = {
 ## Tests rapides
 
 ```bash
-# Suite complète (≈ 30 s sur CPU)
+# Suite complète (≈ 8 min sur CPU 4 cœurs)
 python -m pytest -q tests
 
 # Vérifier le modèle

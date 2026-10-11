@@ -52,14 +52,17 @@ HELP = """
       → Préparer un dataset (shakespeare, linux, hugo, javascript…)
         Défaut : tiktoken BPE | --char pour tokenisation caractère
 
-  train   [--data_dir DIR] [--size nano|small|medium] [--resume] [--longrope]
-      → Entraîner le modèle  (nano ~0.9M, small ~10M, medium ~85M params hors embeddings)
+  train   [--data_dir DIR] [--size nano|small|medium] [--run NOM] [--resume] [--eval]
+          [--patience N] [--dtype auto|bfloat16] [--grad_accum N] [--max_iters N] [--seed N]
+      → Entraîner (nano ~0.9M, small ~10M, medium ~85M params hors embeddings) :
+        checkpoint.pt, best.pt, train.log, run.json dans out-nanopopixa/ ou runs/NOM/
 
   chat    [--checkpoint PATH] [--temp FLOAT] [--tokens INT]
-      → Chat interactif avec le modèle
+      → Chat interactif avec le modèle (ex. --checkpoint runs/NOM/best.pt)
 
-  monitor [--log train.log] [--refresh 1.0]
-      → Dashboard live de la courbe de loss
+  runs    → Tableau des expériences (runs/*) : réglages, best val, bpb, paires
+  monitor [--run NOM] [--log FICHIER] [--refresh 1.0]
+      → Courbe de loss en direct (par défaut : le train.log le plus récent)
 
   gen     [--prompt TEXTE] [--tokens INT] [--temp FLOAT] [--top_p FLOAT]
           [--json] [--schema FICHIER|JSON]
@@ -68,7 +71,7 @@ HELP = """
   eval    [--checkpoint PATH] [--data_dir DIR] [--tasks bpb,paires,samples] [--out eval.json]
       → Mesurer la qualité : bits/octet, paires minimales FR, échantillons (déterministe)
 
-  bench   [--size nano|small|medium] [--seconds 15]
+  bench   [--size nano|small|medium] [--seconds 15] [--dtype float32|bfloat16]
       → Débit réel de ta machine : tokens/s entraînement et génération, mémoire, TFLOPS
 
   scrape  --url URL [--max_pages N] [--output fichier.txt]
@@ -83,6 +86,7 @@ HELP = """
 Exemples :
   prep --dataset shakespeare
   train --data_dir data/ --size small
+  train --data_dir data/ --size nano --run essai --eval
   train --data_dir data/ --resume
   chat
   gen --prompt '{"nom": ' --schema schema.json
@@ -197,7 +201,7 @@ def cmd_train(args):
         value = getattr(args, name, None)
         if value is True:
             _sys.argv.append(f"--{name}")
-        elif value not in (None, False):
+        elif value is not None and value is not False:          # 0 / 0.0 sont des valeurs valides
             _sys.argv += [f"--{name}", str(value)]
     train_path = os.path.join(os.path.dirname(__file__), "train.py")
     runpy.run_path(train_path, run_name="__main__")
@@ -227,13 +231,16 @@ def cmd_collect(args):
 
 
 def _default_log(run: str = None) -> str:
-    """train.log du run nommé, sinon celui du dossier par défaut, sinon ./train.log (< 2.3)."""
+    """train.log du run nommé ; sinon le plus récemment modifié parmi out-nanopopixa/, runs/*/ et
+    ./train.log (< 2.3) — celui de l'entraînement en cours, pas un vieux log."""
     if run:
         return os.path.join("runs", run, "train.log")
-    for path in (os.path.join("out-nanopopixa", "train.log"), "train.log"):
-        if os.path.exists(path):
-            return path
-    return os.path.join("out-nanopopixa", "train.log")
+    import glob
+    candidates = [p for p in [os.path.join("out-nanopopixa", "train.log"), "train.log",
+                              *glob.glob(os.path.join("runs", "*", "train.log"))] if os.path.exists(p)]
+    if not candidates:
+        return os.path.join("out-nanopopixa", "train.log")
+    return max(candidates, key=os.path.getmtime)
 
 
 def cmd_monitor(args):
@@ -592,7 +599,7 @@ def run_shell() -> None:
     print(HELP)
     print(INFO_C
           + "  Commandes : " + CMD_C
-          + "chat  train  prep  eval  bench  monitor  gen  scrape  collect  version  help  exit" + R)
+          + "chat  train  prep  eval  bench  runs  monitor  gen  scrape  collect  version  help  exit" + R)
 
     prompt = (PROMPT_C + B + "popixa" + R + " " + SEP_C + "›" + R + " ")
 

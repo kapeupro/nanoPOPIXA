@@ -26,14 +26,21 @@ mémoire, reproductible et sûr. Chaque changement est mesuré avec `popixa benc
 - **Weight decay 0.1 sur les seules matrices** (il s'appliquait aussi aux poids des RMSNorm).
   betas AdamW inchangés (0.9, 0.999) : 0.95, essayé, coûtait ≈ 0.08 bit par octet (mesuré).
 - **Validation sur des batchs fixes** : les val loss successives sont comparables entre elles.
-- `train.log` est écrit dans le dossier de l'expérience (`out-nanopopixa/train.log` par défaut).
+- `train.log` est écrit dans le dossier de l'expérience (`out-nanopopixa/train.log` par défaut) ;
+  `popixa monitor` suit par défaut le `train.log` le plus récent.
+- `--resume` reprend aussi la graine et les batchs d'évaluation du run (val loss comparables),
+  et applique à l'optimiseur les `--weight_decay` / `--beta2` demandés.
+- `popixa train` transmet enfin les options valant 0 (`--seed 0`, `--dropout 0`, `--patience 0`…).
+- `--dtype auto` choisit float16 + GradScaler sur les GPU antérieurs à Ampere (bfloat16 y est émulé).
 - **`model.py` découpé** : l'architecture reste dans `model.py`, toute la génération passe dans
   `generation.py` (API inchangée : `model.generate_stream(...)` etc.).
 
 ### Sécurité
 - Les checkpoints sont chargés en mode sûr : un fichier piégé est refusé au lieu d'exécuter du
   code. Les checkpoints 2.0 – 2.2 restent lisibles (seule la classe `POPIXAConfig` est autorisée
-  en plus des types simples) et sont réécrits au format 2 à la reprise.
+  en plus des types simples) et sont réécrits au format 2 à la reprise. Avec PyTorch < 2.4, qui ne
+  sait pas n'autoriser que cette classe, il faut l'accord explicite `POPIXA_TRUST_CHECKPOINTS=1` :
+  jamais de repli silencieux sur un chargement complet.
 
 ## [2.2.0] — « Mètre-étalon »
 

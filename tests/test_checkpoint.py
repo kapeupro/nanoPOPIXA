@@ -66,3 +66,44 @@ def test_config_conversions_tolerate_versions():
     assert config_from(d_new) == cfg
     d_old = {k: v for k, v in d.items() if k != "rope_base"}   # checkpoint plus ancien
     assert config_from(d_old).rope_base == POPIXAConfig.rope_base
+
+
+def test_old_pytorch_never_falls_back_to_unsafe_load_silently(tmp_path, monkeypatch):
+    """PyTorch < 2.4 (pas de safe_globals) : un ancien checkpoint demande un accord explicite,
+    un fichier piégé reste refusé même avec cet accord s'il ne ressemble pas à un checkpoint."""
+    for name in ("safe_globals", "add_safe_globals"):
+        monkeypatch.delattr(torch.serialization, name, raising=False)
+    monkeypatch.delenv("POPIXA_TRUST_CHECKPOINTS", raising=False)
+    m = make_model()
+    old = str(tmp_path / "old.pt")
+    torch.save({"model": m.state_dict(), "config": m.config, "iter": 1}, old)
+    with pytest.raises(ValueError, match="POPIXA_TRUST_CHECKPOINTS"):
+        load_checkpoint(old)
+
+    marker = tmp_path / "pwned"
+
+    class Evil:
+        def __reduce__(self):
+            return (open, (str(marker), "w"))
+
+    evil = str(tmp_path / "evil.pt")
+    torch.save({"model": {}, "x": Evil()}, evil)
+    monkeypatch.setenv("POPIXA_TRUST_CHECKPOINTS", "1")
+    with pytest.raises(ValueError, match="refusé"):
+        load_checkpoint(evil)
+    assert not marker.exists()
+    logs = []
+    ck = load_checkpoint(old, log=logs.append)                 # accord explicite : chargé, signalé
+    assert ck["config"] == m.config and any("SANS protection" in l for l in logs)
+
+
+def test_directory_and_newer_format(tmp_path):
+    with pytest.raises(ValueError, match="dossier"):
+        load_checkpoint(str(tmp_path))
+    m = make_model()
+    path = str(tmp_path / "futur.pt")
+    torch.save({"format": FORMAT + 1, "model": m.state_dict(), "config": dict(config_to_dict(m.config), x=1)},
+               path)
+    logs = []
+    assert load_checkpoint(path, log=logs.append)["config"] == m.config
+    assert any("plus récente" in l for l in logs)

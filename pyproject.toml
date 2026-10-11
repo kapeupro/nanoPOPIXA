@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanopopixa"
-version = "2.2.0"
+version = "2.3.0"
 description = "nanoPOPIXA — Un LLM minimaliste from scratch"
 authors = [{ name = "Dimitri" }]
 license = { text = "MIT" }

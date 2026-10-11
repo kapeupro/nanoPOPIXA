@@ -497,8 +497,16 @@ def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
         raise ValueError(f"dtype inconnu : {dtype}")
     if dtype == "float16" and device != "cuda":
         raise ValueError("float16 n'est géré que sur GPU CUDA — utilise bfloat16 ou float32")
-    autocast = (contextlib.nullcontext() if dtype == "float32" else
-                torch.autocast(device_type=device, dtype=getattr(torch, dtype)))
+    autocast = contextlib.nullcontext()
+    if dtype != "float32":
+        try:
+            autocast = torch.autocast(device_type=device, dtype=getattr(torch, dtype))
+            with autocast:
+                probe = torch.ones(8, 8, device=device) @ torch.ones(8, 8, device=device)
+        except Exception as e:     # précision non gérée par cet appareil / cette version de PyTorch
+            raise ValueError(f"dtype {dtype} indisponible sur {device} : {str(e).splitlines()[0]}")
+        if probe.dtype != getattr(torch, dtype):        # autocast désactivé avec un simple avertissement
+            raise ValueError(f"dtype {dtype} indisponible sur {device} (autocast inactif)")
 
     T = cfg.block_size
     n_params = model.get_num_params(False)

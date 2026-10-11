@@ -98,3 +98,18 @@ def test_runs_lists_experiments_and_monitor_finds_run_log(tmp_path, monkeypatch,
     assert popixa_cli._default_log() == os.path.join("out-nanopopixa", "train.log")
     (tmp_path / "train.log").write_text("", encoding="utf-8")         # log d'avant 2.3
     assert popixa_cli._default_log() == "train.log"
+
+
+def test_train_relays_zero_valued_options(monkeypatch):
+    """--seed 0, --dropout 0, --patience 0… sont des valeurs, pas des options absentes (0 == False)."""
+    import runpy
+    seen = {}
+    monkeypatch.setattr(runpy, "run_path", lambda *a, **k: seen.setdefault("argv", list(sys.argv)))
+    monkeypatch.setattr(sys, "argv", ["popixa"])
+    popixa_cli._run_command(["train", "--seed", "0", "--dropout", "0", "--patience", "0",
+                             "--weight_decay", "0", "--attn_dropout", "0.0", "--eval"])
+    argv = seen["argv"]
+    for opt, val in (("--seed", "0"), ("--dropout", "0.0"), ("--patience", "0"),
+                     ("--weight_decay", "0.0"), ("--attn_dropout", "0.0")):
+        assert argv[argv.index(opt) + 1] == val, argv
+    assert "--eval" in argv and "--resume" not in argv and "--size" not in argv

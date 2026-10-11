@@ -10,13 +10,13 @@ exécuter de code (un .pt « classique » est un pickle : il peut lancer n'impor
      "optimizer": état AdamW (reprise), "train": réglages du run, "data_dir": str, ...}
 
 Anciens checkpoints (2.0 – 2.2) : la config est un objet POPIXAConfig picklé. On les charge
-en n'autorisant QUE cette classe (torch.serialization.safe_globals, PyTorch ≥ 2.4) ; avec un
-PyTorch plus ancien, chargement complet signalé — à ne faire que sur ses propres fichiers.
+en n'autorisant QUE cette classe (torch.serialization.safe_globals, PyTorch ≥ 2.4).
+Avec un PyTorch plus ancien (< 2.4), ils ne sont chargés qu'avec l'accord explicite
+POPIXA_TRUST_CHECKPOINTS=1 (chargement complet : à ne faire que sur ses propres fichiers).
 La prochaine sauvegarde (popixa train --resume) les réécrit au format 2.
 """
 
 import os
-import pickle
 import dataclasses
 
 import torch
@@ -59,16 +59,37 @@ def save_checkpoint(path: str, ckpt: dict) -> None:
     os.replace(tmp, path)
 
 
+TRUST_ENV = "POPIXA_TRUST_CHECKPOINTS"     # =1 : autorise le chargement NON sûr d'un ancien checkpoint
+
+
+class _NeedsTrust(Exception):
+    """Ancien format illisible en mode sûr avec ce PyTorch (< 2.4)."""
+
+
 def _load_legacy(path: str, map_location):
-    """Ancien format : seul POPIXAConfig est autorisé en plus des types simples."""
+    """Ancien format : seule POPIXAConfig est autorisée en plus des types simples. Retourne
+    (checkpoint, chargé_en_mode_sûr)."""
     ser = torch.serialization
     if hasattr(ser, "safe_globals"):                          # PyTorch ≥ 2.5
         with ser.safe_globals([POPIXAConfig]):
             return torch.load(path, map_location=map_location, weights_only=True), True
-    if hasattr(ser, "add_safe_globals"):                      # PyTorch 2.4
+    if hasattr(ser, "add_safe_globals"):                      # PyTorch 2.4 (liste globale)
         ser.add_safe_globals([POPIXAConfig])
         return torch.load(path, map_location=map_location, weights_only=True), True
-    return torch.load(path, map_location=map_location, weights_only=False), False
+    # PyTorch < 2.4 : impossible d'autoriser POPIXAConfig seule → jamais de repli silencieux
+    # sur un chargement complet (un fichier piégé exécuterait son code) : il faut l'accord explicite
+    if os.environ.get(TRUST_ENV) == "1":
+        return torch.load(path, map_location=map_location, weights_only=False), False
+    raise _NeedsTrust()
+
+
+def _refused(path: str, err: Exception) -> ValueError:
+    if "global" in str(err).lower() or "class" in str(err).lower():   # objet non autorisé
+        return ValueError(f"checkpoint {path} refusé par le chargement sûr : il contient des objets "
+                          "autres que des tenseurs et des types simples (fichier d'un autre "
+                          "programme, ou piégé)")
+    return ValueError(f"checkpoint {path} illisible : fichier corrompu ou qui n'est pas un "
+                      "checkpoint PyTorch")
 
 
 def load_checkpoint(path: str, map_location="cpu", log=print) -> dict:
@@ -76,28 +97,38 @@ def load_checkpoint(path: str, map_location="cpu", log=print) -> dict:
     Charge un checkpoint en mode sûr ; « config » est rendue sous forme de POPIXAConfig.
     FileNotFoundError si absent ; ValueError (message clair) si illisible ou non autorisé.
     """
+    if os.path.isdir(path):
+        raise ValueError(f"{path} est un dossier, pas un checkpoint")
     try:
         ckpt = torch.load(path, map_location=map_location, weights_only=True)
     except FileNotFoundError:
         raise
-    except (pickle.UnpicklingError, RuntimeError) as first:
-        # Ancien format (POPIXAConfig picklé) — ou fichier corrompu : on retente prudemment
-        try:
-            ckpt, safe = _load_legacy(path, map_location)
-        except Exception as second:
-            if "global" in str(second).lower():          # classe / fonction non autorisée
-                raise ValueError(f"checkpoint {path} refusé par le chargement sûr : il contient des "
-                                 "objets autres que des tenseurs et des types simples (fichier d'un "
-                                 "autre programme, ou piégé)") from None
-            raise ValueError(f"checkpoint {path} illisible : fichier corrompu ou qui n'est pas "
-                             "un checkpoint PyTorch") from None
-        if not safe:
-            log(f"⚠️  {path} : ancien format chargé sans protection (PyTorch < 2.4) — "
-                "à ne faire que sur tes propres fichiers")
     except EOFError:
         raise ValueError(f"checkpoint {path} vide ou tronqué") from None
+    except OSError as e:
+        raise ValueError(f"checkpoint {path} illisible : {e.strerror or e}") from None
+    except Exception as first:
+        # Ancien format (POPIXAConfig picklée) — ou fichier corrompu / piégé
+        if "POPIXAConfig" not in str(first):
+            raise _refused(path, first) from None
+        try:
+            ckpt, safe = _load_legacy(path, map_location)
+        except _NeedsTrust:
+            raise ValueError(
+                f"checkpoint {path} : ancien format (≤ 2.2), lisible en mode sûr avec PyTorch ≥ 2.4 "
+                f"seulement — mets PyTorch à jour ou, si ce fichier vient de toi, relance avec "
+                f"{TRUST_ENV}=1 (il sera réécrit au format 2 à la prochaine reprise)") from None
+        except EOFError:
+            raise ValueError(f"checkpoint {path} vide ou tronqué") from None
+        except Exception as second:
+            raise _refused(path, second) from None
+        if not safe:
+            log(f"⚠️  {path} : ancien format chargé SANS protection ({TRUST_ENV}=1, PyTorch < 2.4)")
     if not isinstance(ckpt, dict):
         raise ValueError(f"checkpoint {path} : contenu inattendu ({type(ckpt).__name__})")
+    if isinstance(ckpt.get("format"), int) and ckpt["format"] > FORMAT:
+        log(f"⚠️  {path} : format {ckpt['format']} (version plus récente de nanoPOPIXA) — "
+            "les champs inconnus sont ignorés")
     if ckpt.get("config") is not None:
         ckpt["config"] = config_from(ckpt["config"])
     return ckpt

@@ -441,10 +441,13 @@ def positive_float(value: str) -> float:
 
 def main():
     parser = argparse.ArgumentParser(description="Monitor d'entraînement nanoPOPIXA")
-    parser.add_argument("--log",     default="train.log")
+    parser.add_argument("--log",     default=None,
+                        help="Fichier de log (défaut : le train.log le plus récent, voir popixa monitor)")
+    parser.add_argument("--run",     default=None, help="Expérience : runs/NOM/train.log")
     parser.add_argument("--refresh", type=positive_float, default=1.0)
     args = parser.parse_args()
-    run_monitor(args.log, args.refresh)
+    from popixa_cli import _default_log
+    run_monitor(args.log or _default_log(args.run), args.refresh)
 
 
 if __name__ == "__main__":

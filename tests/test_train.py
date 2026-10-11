@@ -211,23 +211,95 @@ def test_memmap_keeps_ram_low(tmp_path):
             [sys.executable, "-c",
              "import runpy, sys, resource; sys.argv = sys.argv[1:]; "
              "runpy.run_path(sys.argv[0], run_name='__main__'); "
-             "print('MAXRSS', resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)",
+             "rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss; "
+             "print('MAXRSS', rss // 1024 if sys.platform == 'darwin' else rss)",   # octets sur macOS
              os.path.join(ROOT, "train.py"), "--size", "nano", "--batch_size", "2", "--max_iters", "1",
              "--data_dir", data_dir, "--out_dir", str(tmp_path / ("o" + os.path.basename(data_dir)))],
             cwd=str(tmp_path), env=ENV, capture_output=True, text=True, timeout=600)
         assert r.returncode == 0, r.stdout + r.stderr
         return int(r.stdout.split("MAXRSS")[-1].split()[0])
 
-    small, big = prep("petit", 20_000), prep("gros", 60_000_000)        # 120 Mo sur disque
-    # Sans memmap : + 120 Mo (uint16) + 480 Mo (copie int64) ; avec : quelques pages lues
-    assert peak_kb(big) - peak_kb(small) < 60_000, "train.bin chargé en mémoire ?"
+    small, big = prep("petit", 20_000), prep("gros", 100_000_000)       # 200 Mo sur disque
+    # Sans memmap : + 200 Mo (uint16) + 800 Mo (copie int64) ; avec : quelques pages lues
+    assert peak_kb(big) - peak_kb(small) < 150_000, "train.bin chargé en mémoire ?"
 
 
 def test_train_rejects_bad_options(tmp_path):
     (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
     r = _train(tmp_path, "--max_iters", "1", "--run", "../evasion")
     assert r.returncode == 2 and "simple nom" in r.stderr
-    r = _train(tmp_path, "--max_iters", "1", "--dtype", "float16")                 # CPU
-    assert r.returncode == 1 and "float16" in r.stdout
+    if not torch.cuda.is_available():                                           # float16 : CUDA seulement
+        r = _train(tmp_path, "--max_iters", "1", "--dtype", "float16")
+        assert r.returncode == 1 and "float16" in r.stdout
     r = _train(tmp_path, "--max_iters", "1", "--dtype", "bfloat16")                # autocast CPU
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def _val_losses(log_path):
+    out = {}
+    for line in open(log_path, encoding="utf-8"):
+        if line.startswith("iter"):
+            parts = [p.split() for p in line.split("|")]
+            out[int(parts[0][1])] = float(parts[2][1])
+    return out
+
+
+def test_best_pt_holds_the_best_validation_weights(tmp_path):
+    """best.pt = poids à la PLUS BASSE val loss du train.log (jamais le modèle initial)."""
+    text = "ab" * 9000 + "xy" * 1100                  # la val se dégrade : le meilleur point est tôt
+    (tmp_path / "input.txt").write_text(text, encoding="utf-8")
+    r = _train(tmp_path, "--max_iters", "30", "--eval_interval", "5", "--eval_iters", "2")
+    assert r.returncode == 0, r.stdout + r.stderr
+    run = tmp_path / "out-nanopopixa"
+    vals = {i: v for i, v in _val_losses(run / "train.log").items() if i > 0}
+    best = torch.load(str(run / "best.pt"), weights_only=True)
+    best_it = min(vals, key=vals.get)
+    assert best["iter"] == best_it and best["val_loss"] == pytest.approx(vals[best_it], abs=1e-4)
+    assert best["iter"] < 30                                       # pas simplement le dernier
+
+
+def test_resume_keeps_run_identity_and_applies_new_optimizer_settings(tmp_path):
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2", "--seed", "5", "--eval_iters", "3",
+                  "--eval").returncode == 0
+    run = tmp_path / "out-nanopopixa"
+    assert (run / "eval.json").exists()
+    r = _train(tmp_path, "--max_iters", "4", "--resume", "--weight_decay", "0.05", "--beta2", "0.98")
+    assert r.returncode == 0, r.stdout + r.stderr
+    info = json.loads((run / "run.json").read_text(encoding="utf-8"))
+    assert info["seed"] == 5 and info["weight_decay"] == 0.05            # graine du run, wd demandé
+    ck = torch.load(str(run / "checkpoint.pt"), weights_only=True)
+    assert ck["train"]["eval_iters"] == 3
+    groups = ck["optimizer"]["param_groups"]
+    assert [g["weight_decay"] for g in groups] == [0.05, 0.0] and tuple(groups[0]["betas"]) == (0.9, 0.98)
+    # L'ancienne évaluation décrit d'autres poids : mise de côté
+    assert not (run / "eval.json").exists() and (run / "eval.prev.json").exists()
+
+
+def test_resume_rewrites_a_missing_or_foreign_best_pt(tmp_path):
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2", "--eval_interval", "1").returncode == 0
+    run = tmp_path / "out-nanopopixa"
+    (run / "best.pt").unlink()
+    r = _train(tmp_path, "--max_iters", "4", "--eval_interval", "1", "--resume")
+    assert r.returncode == 0 and "il sera réécrit" in r.stdout, r.stdout + r.stderr
+    best = torch.load(str(run / "best.pt"), weights_only=True)
+    assert best["iter"] in (3, 4)                                   # réécrit par CE run
+
+
+def test_interrupted_run_is_marked_in_run_json(tmp_path):
+    import signal
+    import time
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    p = subprocess.Popen([sys.executable, os.path.join(ROOT, "train.py"), "--size", "nano", "--batch_size", "2",
+                          "--max_iters", "100000", "--run", "coupe"],
+                         cwd=str(tmp_path), env=ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    deadline = time.time() + 300
+    for line in p.stdout:                                           # attendre que la boucle tourne
+        if "iter     0" in line or time.time() > deadline:
+            break
+    time.sleep(1)
+    p.send_signal(signal.SIGINT)
+    p.communicate(timeout=120)
+    info = json.loads((tmp_path / "runs" / "coupe" / "run.json").read_text(encoding="utf-8"))
+    assert info["status"] == "interrompu" and info["last_iter"] >= 0
