@@ -39,7 +39,11 @@ popixa train --size nano --data_dir data_hugo_char --max_iters 1000 --batch_size
 popixa eval --data_dir data_hugo_char --out eval.json
 ```
 
-Entraînement : ≈ 26 min sur CPU 4 cœurs (Xeon 2,1 GHz, 3 threads), courbe de `train.log` :
+> Modèles entraînés en 2.2, avec le dropout 0.1 aussi DANS l'attention. Depuis 2.3
+> (`attn_dropout = 0` par défaut), la même commande donne d'autres poids (autre régularisation,
+> autre tirage aléatoire) et va plus vite : ces chiffres restent la référence 2.2.
+
+Entraînement (2.2) : ≈ 26 min sur CPU 4 cœurs (Xeon 2,1 GHz, 3 threads), courbe de `train.log` :
 
 | itération | 0 | 200 | 400 | 600 | 800 | 1 000 |
 |---|---|---|---|---|---|---|
@@ -47,16 +51,26 @@ Entraînement : ≈ 26 min sur CPU 4 cœurs (Xeon 2,1 GHz, 3 threads), courbe de
 
 ## Débit (`popixa bench`)
 
-Machine : conteneur cloud, Intel Xeon 2,1 GHz, 4 cœurs, sans GPU, PyTorch 2.x CPU, 4 threads.
+Machine : conteneur cloud, Intel Xeon 2,1 GHz, 4 cœurs, sans GPU, PyTorch 2.14 CPU, 4 threads.
+Remesuré en 2.3 (moyenne de 2 mesures ; le bruit de la machine atteint ± 10 %).
 
-| Preset | Vocab | Batch | Entraînement (dropout 0.1) | Sans dropout | Génération (greedy) |
-|---|---|---|---|---|---|
-| `nano` (0.9M) | 115 | 16 × 512 | 6 540 tok/s | 14 720 tok/s | 610 tok/s |
-| `small` (30M avec embeddings) | 50 257 | 4 × 1024 | 515 tok/s | 1 150 tok/s | 156 tok/s |
+| Preset | Vocab | Batch | Entraînement 2.3 (dropout 0.1, `attn_dropout` 0) | Sans dropout | 2.2 : dropout 0.1 aussi dans l'attention | Génération (greedy) |
+|---|---|---|---|---|---|---|
+| `nano` (0.9M) | 115 | 16 × 512 | 18 600 tok/s | 22 400 tok/s | 5 370 tok/s | 670 tok/s |
+| `small` (30M avec embeddings) | 50 257 | 4 × 1024 | 915 tok/s | 905 tok/s | 535 tok/s | 140 tok/s |
 
 À retenir :
-- Sur CPU, le **dropout d'attention** fait passer `scaled_dot_product_attention` sur
-  l'implémentation lente : l'entraînement est ≈ 2,2× plus lent qu'avec `dropout=0`.
-- Le preset `small` par défaut (16 × 1024 × 10 000 itérations ≈ 164M tokens) demanderait ≈ 88 h sur
-  ce CPU : sur CPU, entraîner `nano` ; `small` est fait pour Apple Silicon (MPS) ou un GPU.
-- Lance `popixa bench` sur TA machine pour recaler ces estimations.
+- Depuis 2.3, `attn_dropout = 0.0` par défaut (comme LLaMA) : le `dropout` de train.py (0.1) ne
+  touche plus que les embeddings et les résiduels, et `scaled_dot_product_attention` garde son
+  noyau rapide. Ce dropout coûte ≈ 17 % sur `nano`, rien de mesurable sur `small`.
+- Historique 2.2 : un `dropout_p > 0` DANS l'attention fait retomber SDPA sur l'implémentation
+  « math » lente (sur CPU, probablement aussi sur MPS), qui matérialise la matrice d'attention.
+  Mesuré en 2.2 : entraînement ≈ 2,2× plus lent ; remesuré en 2.3 : ≈ 3,5× (`nano`) et ≈ 1,7×
+  (`small`, où la tête LM de 50 257 tokens pèse davantage), avec un pic de mémoire (RSS)
+  de 1,8 Go au lieu de 0,9 Go (`nano`) et de 6,9 Go au lieu de 5,0 Go (`small`).
+  `POPIXAConfig(attn_dropout=0.1)` rétablit ce comportement (pas d'option dans `popixa bench`).
+- Le preset `small` par défaut (16 × 1024 × 10 000 itérations ≈ 164M tokens) demanderait ≈ 50 h sur
+  ce CPU (≈ 88 h en 2.2) : sur CPU, entraîner `nano` ; `small` est fait pour Apple Silicon (MPS) ou un GPU.
+- Lance `popixa bench` sur TA machine pour recaler ces estimations
+  (`popixa bench --size nano --vocab 115 --batch 16`, `popixa bench --size small` ; `--dropout 0` pour
+  la colonne « Sans dropout »).
