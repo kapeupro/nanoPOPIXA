@@ -204,7 +204,11 @@ def cmd_train(args):
         elif value is not None and value is not False:          # 0 / 0.0 sont des valeurs valides
             _sys.argv += [f"--{name}", str(value)]
     train_path = os.path.join(os.path.dirname(__file__), "train.py")
-    runpy.run_path(train_path, run_name="__main__")
+    import runlock
+    try:
+        runpy.run_path(train_path, run_name="__main__")
+    finally:
+        runlock.release_all()         # le verrou du dossier ne survit pas à la commande (shell)
 
 
 def cmd_prep(args):
@@ -231,8 +235,8 @@ def cmd_collect(args):
 
 
 def _default_log(run: str = None) -> str:
-    """train.log du run nommé ; sinon le plus récemment modifié parmi out-nanopopixa/, runs/*/ et
-    ./train.log (< 2.3) — celui de l'entraînement en cours, pas un vieux log."""
+    """train.log du run nommé ; sinon, parmi out-nanopopixa/, runs/*/ et ./train.log (< 2.3), celui
+    d'un entraînement en cours (dossier verrouillé, voir runlock), le plus récemment modifié d'abord."""
     if run:
         return os.path.join("runs", run, "train.log")
     import glob
@@ -245,7 +249,8 @@ def _default_log(run: str = None) -> str:
                               *glob.glob(os.path.join("runs", "*", "train.log"))] if mtime(p) >= 0]
     if not candidates:
         return os.path.join("out-nanopopixa", "train.log")
-    return max(candidates, key=mtime)
+    import runlock
+    return max(candidates, key=lambda p: (runlock.is_active(os.path.dirname(p) or ".") is True, mtime(p)))
 
 
 def cmd_monitor(args):

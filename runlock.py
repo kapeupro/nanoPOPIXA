@@ -15,6 +15,8 @@ LOCK_NAME = ".train.lock"
 # Verrou déjà tenu par un autre processus (selon le système)
 _BUSY = {errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK, errno.EDEADLK}
 
+_held = []          # verrous pris par ce processus (rendus par release_all)
+
 if os.name == "nt":
     import msvcrt
 
@@ -38,23 +40,46 @@ else:
 def acquire(out_dir: str, wait: float = 1.0):
     """
     Verrou exclusif sur out_dir (qui doit exister). Retourne le fichier ouvert, à garder jusqu'à
-    la fin du processus, ou None si un autre entraînement le tient. Le court délai `wait` couvre
-    le test de popixa monitor (is_active), qui prend le verrou une fraction de milliseconde.
-    Système de fichiers sans verrous (certains montages réseau) : pas de protection plutôt qu'un refus.
+    la fin de l'entraînement, ou None si un autre entraînement le tient. Le court délai `wait`
+    couvre le test de popixa monitor (is_active), qui prend le verrou une fraction de milliseconde.
+    Pas de protection plutôt qu'un refus quand le verrou est impossible : système de fichiers sans
+    verrous (certains montages réseau) → fichier retourné quand même ; dossier non inscriptible
+    sans .train.lock (run < 2.3 archivé en lecture seule) → False.
     """
-    f = open(os.path.join(out_dir, LOCK_NAME), "a+")
+    path = os.path.join(out_dir, LOCK_NAME)
+    try:
+        f = open(path, "a+")
+    except OSError:
+        try:
+            f = open(path, "r")       # .train.lock d'un autre utilisateur, montage en lecture seule
+        except OSError:
+            return False
     deadline = time.monotonic() + wait
     while True:
         try:
             _lock(f, shared=False)
-            return f
+            break
         except OSError as e:
             if e.errno not in _BUSY:
-                return f
+                break
             if time.monotonic() >= deadline:
                 f.close()
                 return None
             time.sleep(0.05)
+    _held.append(f)
+    return f
+
+
+def release_all() -> None:
+    """Rend les verrous pris par ce processus. Indispensable quand train.py tourne DANS un autre
+    programme (shell popixa : runpy) : le verrou ne doit pas survivre à la commande."""
+    while _held:
+        f = _held.pop()
+        try:
+            _unlock(f)
+        except (OSError, ValueError):            # ValueError : fichier déjà fermé
+            pass
+        f.close()
 
 
 def is_active(out_dir: str):

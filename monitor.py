@@ -417,6 +417,8 @@ def _follow(current: str, resolve) -> str:
     active = runlock.is_active(os.path.dirname(current))
     if active is not None:
         return current if active else candidate
+    if runlock.is_active(os.path.dirname(candidate)):
+        return candidate                         # suivi sans verrou (< 2.3), candidat en cours
     try:
         idle = time.time() - os.path.getmtime(current)
     except OSError:

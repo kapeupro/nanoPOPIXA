@@ -30,9 +30,12 @@ mémoire, reproductible et sûr. Chaque changement est mesuré avec `popixa benc
   `popixa monitor` suit par défaut le `train.log` le plus récent.
 - Nouvel entraînement dans un dossier déjà utilisé : l'ancien run passe dans `prev/` (au lieu de
   `checkpoint.prev.pt`) une fois la première sauvegarde écrite ; arrêté avant (même tué brutalement,
-  ou sauvegarde impossible), l'ancien run est remis en place. `prev/` garde le run précédent seulement.
-- Un seul entraînement à la fois par dossier (verrou) ; `popixa monitor` reste sur un entraînement
-  en cours même quand son log ne bouge pas entre deux évaluations.
+  ou sauvegarde impossible), l'ancien run est remis en place. `prev/` garde le run précédent seulement ;
+  un run sans modèle (ni checkpoint.pt ni best.pt) ne remplace pas un `prev/` qui en a un (il est
+  supprimé). `prev.new/` et `prev.old/` sont réservés : un dossier de l'utilisateur à ce nom n'est jamais touché.
+- Un seul entraînement à la fois par dossier (verrou, rendu à la fin de la commande dans le shell
+  `popixa`) ; `popixa monitor` suit l'entraînement en cours, même quand son log ne bouge pas entre
+  deux évaluations.
 - `--resume` reprend aussi la graine et les batchs d'évaluation du run (val loss comparables),
   et applique à l'optimiseur les `--weight_decay` / `--beta2` demandés.
 - `popixa train` transmet enfin les options valant 0 (`--seed 0`, `--dropout 0`, `--patience 0`…).

@@ -160,3 +160,50 @@ def test_monitor_stays_on_a_running_training_between_evaluations(tmp_path):
     assert runlock.is_active(str(a.parent)) is False
     assert monitor._follow(str(a), lambda: str(b)) == str(b)
     assert runlock.is_active(str(tmp_path)) is None                   # pas de verrou : run < 2.3
+
+
+def test_shell_train_releases_the_folder_lock(tmp_path):
+    """Shell popixa : train.py tourne DANS le processus (runpy) — son verrou est rendu à la fin de
+    la commande, sinon un `train --resume` suivant serait refusé (« tourne déjà »)."""
+    import random
+    random.seed(0)
+    words = "le chat dort sur le canapé pendant que la pluie tombe".split()
+    (tmp_path / "input.txt").write_text(" ".join(random.choice(words) for _ in range(2500)), encoding="utf-8")
+    code = ("import popixa_cli, runlock\n"
+            "base = ['train', '--size', 'nano', '--batch_size', '2', '--eval_iters', '1']\n"
+            "popixa_cli._run_command(base + ['--max_iters', '2'])\n"
+            "print('ACTIF', runlock.is_active('out-nanopopixa'))\n"
+            "popixa_cli._run_command(base + ['--max_iters', '3', '--resume'])\n")
+    r = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path), env=ENV, capture_output=True,
+                       text=True, timeout=600)
+    assert r.returncode == 0 and "ACTIF False" in r.stdout, r.stdout + r.stderr
+    assert "Reprise depuis iter 2" in r.stdout and "tourne déjà" not in r.stdout, r.stdout
+
+
+def test_default_log_prefers_a_running_training(tmp_path, monkeypatch):
+    """Un run terminé à l'instant ne masque pas l'entraînement en cours (verrou tenu) dont le log
+    n'a pas bougé depuis sa dernière évaluation."""
+    import runlock
+    monkeypatch.chdir(tmp_path)
+    done, running = tmp_path / "runs" / "fini" / "train.log", tmp_path / "runs" / "encours" / "train.log"
+    for p in (done, running):
+        p.parent.mkdir(parents=True)
+        p.write_text("", encoding="utf-8")
+    old = __import__("time").time() - 600
+    os.utime(running, (old, old))
+    assert popixa_cli._default_log() == os.path.join("runs", "fini", "train.log")
+    lock = runlock.acquire(str(running.parent))
+    try:
+        assert popixa_cli._default_log() == os.path.join("runs", "encours", "train.log")
+        assert monitor._follow(str(done), popixa_cli._default_log) == os.path.abspath(
+            os.path.join("runs", "encours", "train.log"))
+    finally:
+        runlock.release_all()
+    assert runlock.is_active(str(running.parent)) is False
+
+
+def test_lock_impossible_means_no_protection_not_a_crash(tmp_path):
+    """Dossier où .train.lock ne peut pas être créé (lecture seule, run < 2.3 archivé) : pas de
+    verrou plutôt qu'un plantage (False ≠ None, qui veut dire « un entraînement tourne déjà »)."""
+    import runlock
+    assert runlock.acquire(str(tmp_path / "absent")) is False

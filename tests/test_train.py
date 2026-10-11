@@ -396,19 +396,24 @@ def test_new_run_moves_previous_run_to_prev_and_recovers_after_kill(tmp_path):
     assert _snapshot(run) == b_files and _snapshot(run / "prev") == a_files
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_FSIZE POSIX")
 def test_failed_first_save_keeps_previous_run(tmp_path):
-    """La 1re sauvegarde d'un nouveau run échoue (disque plein…) : le run précédent reste en place,
-    prev/ intact — rien n'est engagé avant que le checkpoint soit écrit."""
+    """La 1re sauvegarde d'un nouveau run échoue (disque plein) : le run précédent reste en place
+    à l'identique, prev/ intact, pas de checkpoint partiel — rien n'est engagé avant l'écriture."""
+    import resource
     (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
     assert _train(tmp_path, "--max_iters", "2", "--seed", "1").returncode == 0      # run A → prev/
     assert _train(tmp_path, "--max_iters", "2", "--seed", "2").returncode == 0      # run B
     run = tmp_path / "out-nanopopixa"
     a_files, b_files = _snapshot(run / "prev"), _snapshot(run)
-    (run / "checkpoint.pt.tmp").mkdir()                    # l'écriture du checkpoint va échouer
-    r = _train(tmp_path, "--max_iters", "2", "--seed", "3")                          # run C
+    limit = (run / "checkpoint.pt").stat().st_size // 2                 # « disque plein » à mi-écriture
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "train.py"), "--size", "nano", "--batch_size", "2",
+                        "--max_iters", "2", "--seed", "3"], cwd=str(tmp_path), env=ENV, capture_output=True,
+                       text=True, timeout=600,
+                       preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit)))
     assert r.returncode != 0 and "remis en place" in r.stdout, r.stdout + r.stderr
     assert _snapshot(run) == b_files and _snapshot(run / "prev") == a_files
-    assert not (run / "prev.new").exists() and not (run / "prev.old").exists()
+    assert sorted(p.name for p in run.iterdir()) == sorted([*b_files, "prev", ".train.lock"])
 
 
 def test_second_training_in_the_same_folder_is_refused(tmp_path):
@@ -421,7 +426,8 @@ def test_second_training_in_the_same_folder_is_refused(tmp_path):
     (run / "prev.new").mkdir()                             # état d'un nouveau run en cours
     for n in ("checkpoint.pt", "best.pt"):
         os.replace(run / n, run / "prev.new" / n)
-    (run / "prev.new" / ".complet").write_text("", encoding="utf-8")
+    for mark in (".transaction", ".complet"):
+        (run / "prev.new" / mark).write_text("", encoding="utf-8")
     before = sorted(str(p.relative_to(run)) for p in run.rglob("*"))
     lock = runlock.acquire(str(run))
     try:
@@ -449,23 +455,53 @@ def test_recovery_after_kill_at_any_step_of_the_transaction(tmp_path):
         assert _snapshot(run) == b_files and _snapshot(run / "prev") == a_files
         assert not (run / "prev.new").exists() and not (run / "prev.old").exists()
 
-    # 1. Tué pendant la mise de côté (pas de marqueur) : rien n'est supprimé
+    def mark(folder, *names):
+        for name in names:
+            (folder / name).write_text("", encoding="utf-8")
+
+    # 0. Tué juste après la création de prev.new/ (avant son marqueur) : dossier vide supprimé
     (run / "prev.new").mkdir()
+    resume_ok()
+    # 1. Tué pendant la mise de côté (marqueur .complet pas encore écrit) : rien n'est supprimé
+    (run / "prev.new").mkdir()
+    mark(run / "prev.new", ".transaction")
     os.replace(run / "checkpoint.pt", run / "prev.new" / "checkpoint.pt")
     resume_ok()
-    # 2. Tué pendant l'échange : prev/ → prev.old/ fait, prev.new/ (marqué) pas encore → prev/
+    # 2. Tué pendant l'échange : prev/ → prev.old/ fait, prev.new/ (complet) pas encore → prev/
+    mark(run / "prev", ".transaction")
     os.replace(run / "prev", run / "prev.old")
     (run / "prev.new").mkdir()
     for n in b_files:
         os.replace(run / n, run / "prev.new" / n)
-    (run / "prev.new" / ".complet").write_text("", encoding="utf-8")
+    mark(run / "prev.new", ".transaction", ".complet")
     (run / "train.log").write_text("# lancement tué\n", encoding="utf-8")
     (run / "checkpoint.pt").write_bytes(b"checkpoint du lancement tu\xc3\xa9")
+    (run / "checkpoint.pt.tmp").write_bytes(b"\x00" * 1000)                 # écriture avortée
     resume_ok()
+    assert not (run / "checkpoint.pt.tmp").exists() and not (run / "prev" / ".transaction").exists()
     # 3. Tué pendant la suppression de l'ancien prev/ (échange fait)
     (run / "prev.old").mkdir()
+    mark(run / "prev.old", ".transaction")
     (run / "prev.old" / "checkpoint.pt").write_bytes(b"reste")
     resume_ok()
+
+
+def test_reserved_folder_names_from_the_user_are_never_touched(tmp_path):
+    """prev.new/ ou prev.old/ créés par l'utilisateur (sans le marqueur de train.py) : refus, rien
+    n'est supprimé, déplacé ni écrasé."""
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2").returncode == 0
+    run = tmp_path / "out-nanopopixa"
+    before = _snapshot(run)
+    for name in ("prev.old", "prev.new"):
+        (run / name).mkdir()
+        (run / name / "checkpoint.pt").write_bytes(b"sauvegarde de l'utilisateur")
+        for extra in (("--resume",), ("--max_iters", "2", "--seed", "2")):
+            r = _train(tmp_path, *extra)
+            assert r.returncode == 1 and "nom réservé" in r.stdout, r.stdout + r.stderr
+            assert (run / name / "checkpoint.pt").read_bytes() == b"sauvegarde de l'utilisateur"
+            assert _snapshot(run) == before
+        os.replace(run / name, tmp_path / name)            # renommé ailleurs : de nouveau utilisable
 
 
 def test_model_less_previous_files_do_not_replace_prev(tmp_path):

@@ -56,8 +56,15 @@ def save_checkpoint(path: str, ckpt: dict) -> None:
     if "config" in payload:
         payload["config"] = config_to_dict(payload["config"])
     tmp = path + ".tmp"
-    torch.save(payload, tmp)
-    os.replace(tmp, path)
+    try:
+        torch.save(payload, tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)              # pas de fichier partiel (disque plein, Ctrl+C…)
+        except OSError:
+            pass
+        raise
 
 
 TRUST_ENV = "POPIXA_TRUST_CHECKPOINTS"     # =1 : autorise le chargement NON sûr d'un ancien checkpoint

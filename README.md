@@ -168,8 +168,12 @@ Un nouvel entraînement dans un dossier déjà utilisé met l'ancien run de côt
 première sauvegarde écrite ; arrêté avant (Ctrl+C, erreur, disque plein, ou même processus tué : rattrapé
 au lancement suivant), il remet l'ancien run en place à l'identique. `prev/` ne garde que **le run
 précédent** : l'ancien `prev/` est supprimé à cette première sauvegarde (un dossier par expérience avec
-`--run NOM` pour tout garder). Un seul entraînement à la fois par dossier : un 2e lancement dans un
-dossier où un entraînement tourne s'arrête sans rien toucher.
+`--run NOM` pour tout garder) — sauf si le run mis de côté n'a aucun modèle (ni `checkpoint.pt` ni
+`best.pt`, par exemple un run planté avant sa 1re sauvegarde) alors que `prev/` en a un : `prev/` est
+conservé et les fichiers de ce run (`train.log`, `run.json`…) sont supprimés (signalé au lancement).
+`prev.new/` et `prev.old/` sont des noms réservés à ce mécanisme : un dossier à toi de ce nom n'est jamais
+touché (l'entraînement refuse de démarrer, renomme-le). Un seul entraînement à la fois par dossier :
+un 2e lancement dans un dossier où un entraînement tourne s'arrête sans rien toucher.
 
 La val loss est mesurée sur **les mêmes batchs à chaque évaluation** : deux points de la courbe sont
 comparables, `best.pt` et l'arrêt anticipé ne dépendent pas du hasard du tirage.

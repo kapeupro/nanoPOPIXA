@@ -188,10 +188,14 @@ EFFORT_PRESETS = {
     point est le checkpoint, sinon réécrit à la prochaine évaluation s'il en reste une (sinon :
     « impossible à reconstruire », best.pt absent)
   - verrou par dossier (`runlock.py`, `DOSSIER/.train.lock`, flock / msvcrt) pris AVANT de toucher au
-    dossier et tenu toute la vie du processus : 2e train.py dans le même dossier → refus, rien touché ;
-    `popixa monitor` ne quitte pas un run dont le verrou est tenu (`runlock.is_active`)
-  - lancements transactionnels : un nouveau run dans un dossier occupé déplace les `RUN_FILES` du run
-    précédent dans `prev.new/` puis écrit `prev.new/.complet` (mise de côté complète) ; APRÈS
+    dossier et tenu jusqu'à la fin : 2e train.py dans le même dossier → refus, rien touché ; le shell
+    `popixa` (train.py via runpy, même processus) le rend avec `runlock.release_all()` ; dossier non
+    inscriptible → pas de protection (acquire → False) plutôt qu'un plantage ; `_default_log` et
+    `monitor._follow` préfèrent un run dont le verrou est tenu (`runlock.is_active`)
+  - lancements transactionnels : un nouveau run dans un dossier occupé crée `prev.new/` + son marqueur
+    `.transaction`, y déplace les `RUN_FILES` du run précédent puis écrit `.complet` ; `prev.new/` et
+    `prev.old/` sans `.transaction` = dossiers de l'utilisateur → `_check_reserved` refuse (vides :
+    supprimés) ; checkpoint/run.json écrits via `.tmp` supprimé en cas d'échec ; APRÈS
     l'écriture réussie de la 1re sauvegarde, `_commit_launch` : `prev/` → `prev.old/`, `prev.new/` →
     `prev/` (engagement), puis suppression de `prev.old/` — `prev/` = UNE génération ; une mise de côté
     sans modèle ne remplace pas un `prev/` qui en a un (jetée). Interruption / erreur avant →

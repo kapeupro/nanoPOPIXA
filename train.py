@@ -111,12 +111,16 @@ run_path  = os.path.join(out_dir, "run.json")
 # dernier) ; une fois sa 1re sauvegarde ÉCRITE, prev.new/ devient prev/ (engagé) — prev/ ne garde
 # que le run précédent. Interrompu ou planté avant, le run précédent est remis en place à
 # l'identique ; après un arrêt brutal (même au milieu d'un déplacement), au lancement suivant.
+# prev.new/ et prev.old/ sont des noms réservés : train.py n'y touche que s'ils portent son
+# marqueur .transaction (un dossier de l'utilisateur à ce nom n'est jamais supprimé ni restauré).
 RUN_FILES   = ("checkpoint.pt", "best.pt", "train.log", "run.json", "eval.json", "samples.md",
                "eval.prev.json", "samples.prev.md", "checkpoint.prev.pt")   # .prev.pt : sauvegarde ≤ 2.2
 MODEL_FILES = ("checkpoint.pt", "best.pt", "checkpoint.prev.pt")
+TMP_FILES   = ("checkpoint.pt.tmp", "best.pt.tmp", "run.json.tmp")         # écritures atomiques avortées
 prev_dir    = os.path.join(out_dir, "prev")
 staging_dir = os.path.join(out_dir, "prev.new")
 old_dir     = os.path.join(out_dir, "prev.old")       # ancien prev/ (ou mise de côté jetée) à supprimer
+TX_MARK     = ".transaction"                          # dans prev.new/ et prev.old/ : créés par train.py
 staged_mark = os.path.join(staging_dir, ".complet")   # mise de côté terminée
 
 
@@ -124,22 +128,47 @@ def _has_model(folder: str) -> bool:
     return any(os.path.exists(os.path.join(folder, n)) for n in MODEL_FILES)
 
 
+def _ours(folder: str) -> bool:
+    return os.path.exists(os.path.join(folder, TX_MARK))
+
+
+def _remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _check_reserved() -> None:
+    """prev.new/ ou prev.old/ sans le marqueur de train.py : vide → création interrompue, supprimé ;
+    sinon dossier de l'utilisateur → on s'arrête sans rien toucher."""
+    for folder in (staging_dir, old_dir):
+        if os.path.isdir(folder) and not _ours(folder):
+            if os.listdir(folder):
+                print(f"❌ {folder}/ n'a pas été créé par train.py (nom réservé aux lancements) — "
+                      "renomme-le ; rien n'a été modifié")
+                sys.exit(1)
+            os.rmdir(folder)
+
+
 def _rollback_launch() -> bool:
     """Remet en place le run mis de côté dans prev.new/ ; True s'il y en avait un. Reprend sans
     perte là où un arrêt brutal l'a laissé (mise de côté ou rollback à moitié faits)."""
-    if not os.path.isdir(staging_dir):
+    if not os.path.isdir(staging_dir) or not _ours(staging_dir):
         return False
     if os.path.exists(staged_mark):
         # Mise de côté complète : les fichiers du dossier sont ceux du lancement avorté
-        for name in RUN_FILES:
+        for name in RUN_FILES + TMP_FILES:
             cur = os.path.join(out_dir, name)
-            if os.path.exists(cur):
+            if os.path.isfile(cur):
                 os.remove(cur)
         os.remove(staged_mark)
     # Sans marqueur (arrêt pendant la mise de côté, ou pendant un rollback après les suppressions),
     # le dossier ne contient que des fichiers du run d'avant : on ne supprime rien
     for name in os.listdir(staging_dir):
-        os.replace(os.path.join(staging_dir, name), os.path.join(out_dir, name))
+        if name != TX_MARK:
+            os.replace(os.path.join(staging_dir, name), os.path.join(out_dir, name))
+    os.remove(os.path.join(staging_dir, TX_MARK))
     os.rmdir(staging_dir)
     return True
 
@@ -148,9 +177,10 @@ def _recover_launch() -> bool:
     """Lancement précédent arrêté brutalement : annule ce qu'il n'avait pas engagé. True si le
     run d'avant a été remis en place."""
     import shutil
-    if os.path.isdir(old_dir):
+    if os.path.isdir(old_dir) and _ours(old_dir):
         if os.path.isdir(staging_dir) and not os.path.isdir(prev_dir):
             os.replace(old_dir, prev_dir)          # arrêté pendant l'échange : l'ancien prev/ revient
+            _remove(os.path.join(prev_dir, TX_MARK))
         else:
             shutil.rmtree(old_dir)                 # échange fait, suppression interrompue
     return _rollback_launch()
@@ -174,6 +204,7 @@ def _lock_out_dir() -> None:
 
 if os.path.isdir(out_dir):
     _lock_out_dir()
+    _check_reserved()
     if _recover_launch():
         print(f"♻️  Lancement précédent arrêté avant sa 1re sauvegarde : run d'avant restauré dans {out_dir}/")
 
@@ -589,6 +620,7 @@ else:
     _old = [n for n in RUN_FILES if os.path.exists(os.path.join(out_dir, n))]
     if _old:
         os.makedirs(staging_dir)
+        open(os.path.join(staging_dir, TX_MARK), "w").close()     # en premier : dossier de train.py
         for name in _old:
             os.replace(os.path.join(out_dir, name), os.path.join(staging_dir, name))
         open(staged_mark, "w").close()            # en dernier : la mise de côté est complète
@@ -656,9 +688,13 @@ def write_run_json(**results) -> None:
     }
     info.update(results)
     tmp = run_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(info, f, ensure_ascii=False, indent=2, sort_keys=True)
-    os.replace(tmp, run_path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(info, f, ensure_ascii=False, indent=2, sort_keys=True)
+        os.replace(tmp, run_path)
+    except BaseException:
+        _remove(tmp)                    # pas de fichier partiel (disque plein, Ctrl+C…)
+        raise
 
 
 def _popixa_version() -> str:
@@ -692,19 +728,23 @@ def _commit_launch() -> None:
         return
     import shutil
     if os.path.isdir(old_dir):
+        if not _ours(old_dir):
+            raise RuntimeError(f"{old_dir}/ n'a pas été créé par train.py (nom réservé) — renomme-le")
         shutil.rmtree(old_dir)
     if _has_model(staging_dir) or not _has_model(prev_dir):
         if os.path.isdir(prev_dir):
+            open(os.path.join(prev_dir, TX_MARK), "w").close()
             os.replace(prev_dir, old_dir)
         os.replace(staging_dir, prev_dir)        # ← engagé
     else:
         os.replace(staging_dir, old_dir)         # ← engagé (mise de côté jetée)
     _committed = True
-    for cleanup in (lambda: os.remove(os.path.join(prev_dir, ".complet")), lambda: shutil.rmtree(old_dir)):
-        try:
-            cleanup()
-        except OSError:
-            pass                                 # rattrapé au lancement suivant
+    _remove(os.path.join(prev_dir, ".complet"))
+    _remove(os.path.join(prev_dir, TX_MARK))
+    try:
+        shutil.rmtree(old_dir)
+    except OSError:
+        pass                                     # rattrapé au lancement suivant
 
 
 if iter_start < max_iters:
