@@ -185,7 +185,8 @@ def cmd_chat(args):
 
 # Options de popixa train relayées telles quelles à train.py (None / False = non passée)
 _TRAIN_OPTIONS = ("size", "data_dir", "input", "resume", "longrope", "max_iters", "batch_size", "seed",
-                  "out_dir", "run", "patience", "dtype", "eval", "eval_interval", "eval_iters", "grad_accum")
+                  "out_dir", "run", "patience", "dtype", "eval", "eval_interval", "eval_iters", "grad_accum",
+                  "lr", "weight_decay", "beta2", "dropout", "attn_dropout")
 
 
 def cmd_train(args):
@@ -466,6 +467,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--eval_interval", type=int, default=None)
     p_train.add_argument("--eval_iters",    type=int, default=None)
     p_train.add_argument("--grad_accum",    type=int, default=None)
+    for _opt in ("lr", "weight_decay", "beta2", "dropout", "attn_dropout"):
+        p_train.add_argument(f"--{_opt}", type=float, default=None)
 
     # ── prep ──────────────────────────────────────────────────────────
     p_prep = sub.add_parser("prep")

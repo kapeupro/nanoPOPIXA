@@ -64,6 +64,14 @@ parser.add_argument("--grad_accum",    type=int, default=None,
                     help="Accumulation de gradient : batch effectif = batch_size × N, mémoire d'un seul batch")
 parser.add_argument("--eval_interval", type=int, default=100, help="Évaluation (et sauvegarde) toutes les N itérations")
 parser.add_argument("--eval_iters",    type=int, default=10,  help="Batchs par évaluation de la loss")
+# Réglages experts (expériences, ablations) — par défaut ceux du preset ; en reprise, ceux du run
+parser.add_argument("--lr",           type=float, default=None, help="Learning rate maximal (défaut : preset)")
+parser.add_argument("--weight_decay", type=float, default=None, help="Weight decay des matrices (défaut 0.1)")
+parser.add_argument("--beta2",        type=float, default=None, help="beta2 d'AdamW (défaut 0.95)")
+parser.add_argument("--dropout",      type=float, default=None,
+                    help="Dropout embeddings / résiduels / MLP (défaut 0.1)")
+parser.add_argument("--attn_dropout", type=float, default=None,
+                    help="Dropout DANS l'attention (défaut 0 : > 0 rend SDPA lent sur CPU / Mac)")
 parser.add_argument("--eval",       action="store_true",
                     help="En fin d'entraînement : popixa eval sur best.pt → eval.json + samples.md du run")
 args = parser.parse_args()
@@ -77,6 +85,13 @@ if args.eval_interval < 1 or args.eval_iters < 1:
     parser.error("--eval_interval et --eval_iters doivent être ≥ 1")
 if args.grad_accum is not None and args.grad_accum < 1:
     parser.error("--grad_accum doit être ≥ 1")
+for _opt in ("dropout", "attn_dropout"):
+    if getattr(args, _opt) is not None and not 0.0 <= getattr(args, _opt) < 1.0:
+        parser.error(f"--{_opt} doit être dans [0, 1)")
+if args.beta2 is not None and not 0.0 < args.beta2 < 1.0:
+    parser.error("--beta2 doit être dans ]0, 1[")
+if (args.lr is not None and args.lr <= 0) or (args.weight_decay is not None and args.weight_decay < 0):
+    parser.error("--lr doit être > 0 et --weight_decay ≥ 0")
 
 # ── Reproductibilité ──────────────────────────────────────────────────────────
 random.seed(args.seed)
@@ -163,12 +178,22 @@ if args.max_iters is not None:
 if args.batch_size is not None:
     batch_size = max(1, args.batch_size)
 
-dropout    = 0.1          # dropout résiduel et embedding (l'attention n'en a pas : noyau SDPA rapide)
+if args.lr is not None:
+    learning_rate = args.lr
+
+# Régularisation : --option, sinon réglage du run repris, sinon défaut
+def _hp(name, default):
+    value = getattr(args, name)
+    return value if value is not None else _saved.get(name, default) if _saved else default
+
+
+dropout      = _hp("dropout", 0.1)       # embeddings, résiduels, MLP
+attn_dropout = _hp("attn_dropout", 0.0)  # DANS l'attention : 0 garde le noyau SDPA rapide (CPU / Mac)
 min_lr     = learning_rate / 10
 lr_decay_iters  = max_iters
 grad_clip       = 1.0
-weight_decay    = 0.1      # sur les matrices seulement (pas les normalisations RMSNorm)
-betas           = (0.9, 0.95)
+weight_decay    = _hp("weight_decay", 0.1)   # sur les matrices seulement (pas les RMSNorm)
+betas           = (0.9, _hp("beta2", 0.95))
 
 # Évaluation — toutes les eval_interval iters, moyenne sur eval_iters batchs (fixes)
 eval_interval   = args.eval_interval
@@ -396,6 +421,7 @@ config = POPIXAConfig(
     n_embd=n_embd,
     dropout=dropout,
     rope_base=rope_base,
+    attn_dropout=attn_dropout,
 )
 
 model = nanoPOPIXA(config).to(device)
@@ -466,7 +492,9 @@ def _payload(it: int) -> dict:
         # Réglages d'entraînement : --resume sans options les reprend tels quels
         "train":     {"size": size, "batch_size": batch_size, "max_iters": max_iters,
                       "learning_rate": learning_rate, "warmup_iters": warmup_iters,
-                      "patience": patience, "dtype": dtype, "grad_accum": gradient_accumulation_steps},
+                      "patience": patience, "dtype": dtype, "grad_accum": gradient_accumulation_steps,
+                      "weight_decay": weight_decay, "beta2": betas[1], "dropout": dropout,
+                      "attn_dropout": attn_dropout},
     }
     if meta.get("tokenizer") != "tiktoken_gpt2":
         payload["vocab"] = {"stoi": stoi, "itos": itos}
@@ -496,7 +524,7 @@ def write_run_json(**results) -> None:
         "params": model.get_num_params(False), "block_size": block_size, "n_layer": n_layer,
         "n_head": n_head, "n_embd": n_embd, "batch_size": batch_size, "max_iters": max_iters,
         "learning_rate": learning_rate, "warmup_iters": warmup_iters, "weight_decay": weight_decay,
-        "dropout": dropout, "attn_dropout": getattr(config, "attn_dropout", 0.0), "patience": patience,
+        "dropout": dropout, "attn_dropout": attn_dropout, "beta2": betas[1], "patience": patience,
         "grad_accum": gradient_accumulation_steps,
     }
     info.update(results)
