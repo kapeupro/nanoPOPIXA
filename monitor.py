@@ -398,18 +398,25 @@ def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.l
 
 
 # ─── Boucle principale ────────────────────────────────────────────────────────
-STALE_LOG_S = 60     # un log suivi immobile depuis plus longtemps cède la place au plus récent
+STALE_LOG_S = 60     # log d'un run < 2.3 (sans verrou) immobile depuis plus longtemps : on le quitte
 
 
 def _follow(current: str, resolve) -> str:
-    """Log à afficher : le plus récent selon resolve(), mais on ne quitte le log suivi que s'il
-    ne bouge plus (sinon, avec deux entraînements en parallèle, on alternerait de l'un à l'autre)."""
+    """Log à afficher : le plus récent selon resolve(), mais on ne quitte pas le log d'un
+    entraînement qui tourne encore (sinon, avec deux entraînements en parallèle, on alternerait
+    de l'un à l'autre). « Tourne encore » = son dossier est verrouillé par train.py (runlock) —
+    même si le log ne bouge pas entre deux évaluations (≈ 30 min en small sur CPU) ; sans verrou
+    (run < 2.3, log hors d'un dossier de run) : log modifié depuis moins de STALE_LOG_S."""
     try:
         candidate = os.path.abspath(resolve())
     except OSError:
         return current
     if candidate == current:
         return current
+    import runlock
+    active = runlock.is_active(os.path.dirname(current))
+    if active is not None:
+        return current if active else candidate
     try:
         idle = time.time() - os.path.getmtime(current)
     except OSError:

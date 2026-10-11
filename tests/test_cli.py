@@ -139,3 +139,24 @@ def test_monitor_does_not_flip_between_active_runs(tmp_path):
     assert monitor._follow(str(a), lambda: str(b)) == str(b)
     a.unlink()                                            # suivi disparu → on bascule
     assert monitor._follow(str(a), lambda: str(b)) == str(b)
+
+
+def test_monitor_stays_on_a_running_training_between_evaluations(tmp_path):
+    """Run en cours (dossier verrouillé par train.py) : on le garde même si son log n'a pas bougé
+    depuis longtemps (≈ 30 min entre deux évaluations en small sur CPU) ; verrou libéré → on bascule."""
+    import runlock
+    a, b = tmp_path / "a" / "train.log", tmp_path / "b" / "train.log"
+    for p in (a, b):
+        p.parent.mkdir()
+        p.write_text("", encoding="utf-8")
+    old = __import__("time").time() - 3600
+    os.utime(a, (old, old))
+    lock = runlock.acquire(str(a.parent))
+    try:
+        assert runlock.is_active(str(a.parent)) is True
+        assert monitor._follow(str(a), lambda: str(b)) == str(a)
+    finally:
+        lock.close()
+    assert runlock.is_active(str(a.parent)) is False
+    assert monitor._follow(str(a), lambda: str(b)) == str(b)
+    assert runlock.is_active(str(tmp_path)) is None                   # pas de verrou : run < 2.3

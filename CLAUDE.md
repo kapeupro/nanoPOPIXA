@@ -30,6 +30,7 @@ Token Embedding (wte, weight-tied avec lm_head)
 | `generation.py` | Génération : `GenerationMixin` hérité par `nanoPOPIXA` (sampling, generate, generate_stream, thinking, speculative, structured), `KVCache`, `_Decoder` — n'importe pas `model` |
 | `train.py` | Boucle d'entraînement : cosine+warmup, memmap, autocast (`--dtype`), best.pt, `--patience`, `--run` |
 | `checkpoint.py` | Format de checkpoint 2 (types simples) : `save_checkpoint` atomique, `load_checkpoint` sûr (`weights_only=True`) |
+| `runlock.py` | Verrou d'un dossier d'expérience (`.train.lock`) : un train.py à la fois ; `is_active` pour le monitor |
 | `chat.py` | CLI interactif, effort levels, thinking blocks, KV-cache persistant |
 | `session_cache.py` | Sérialisation/restauration du KV-cache entre sessions (format v3 : ids exacts + historique) |
 | `structured.py` | Structured outputs : matcher JSON Schema octet par octet, masques de tokens, complétion la plus courte |
@@ -184,11 +185,20 @@ EFFORT_PRESETS = {
     reprise sont réappliqués aux groupes de l'optimiseur (load_state_dict remet les anciens)
   - best.pt jamais écrit à l'évaluation initiale ; écrit APRÈS checkpoint.pt ; à la reprise, vérifié
     contre (best_iter, best_val) du checkpoint : restauré (écriture directe, sans engager) si le meilleur
-    point est le checkpoint, sinon réécrit à la prochaine évaluation
+    point est le checkpoint, sinon réécrit à la prochaine évaluation s'il en reste une (sinon :
+    « impossible à reconstruire », best.pt absent)
+  - verrou par dossier (`runlock.py`, `DOSSIER/.train.lock`, flock / msvcrt) pris AVANT de toucher au
+    dossier et tenu toute la vie du processus : 2e train.py dans le même dossier → refus, rien touché ;
+    `popixa monitor` ne quitte pas un run dont le verrou est tenu (`runlock.is_active`)
   - lancements transactionnels : un nouveau run dans un dossier occupé déplace les `RUN_FILES` du run
-    précédent dans `prev.new/` ; 1re sauvegarde (`_commit_launch`) → `prev.new/` devient `prev/` ;
-    interruption / erreur avant → `_rollback_launch` remet le run précédent à l'identique (aussi au
-    lancement suivant si le processus a été tué) ; run.json « interrompu » / « erreur » sinon
+    précédent dans `prev.new/` puis écrit `prev.new/.complet` (mise de côté complète) ; APRÈS
+    l'écriture réussie de la 1re sauvegarde, `_commit_launch` : `prev/` → `prev.old/`, `prev.new/` →
+    `prev/` (engagement), puis suppression de `prev.old/` — `prev/` = UNE génération ; une mise de côté
+    sans modèle ne remplace pas un `prev/` qui en a un (jetée). Interruption / erreur avant →
+    `_recover_launch` (prev.old/ remis en prev/ si l'échange était à moitié fait, puis
+    `_rollback_launch` : suppression des fichiers du lancement avorté seulement si `.complet` existe,
+    remise en place) — aussi au lancement suivant si le processus a été tué ; run.json « interrompu » /
+    « erreur » sinon
 - **CLI** : `popixa runs`, `popixa monitor --run`, `popixa bench --dtype`
 
 ## Ce qui reste à implémenter (backlog)

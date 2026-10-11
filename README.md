@@ -164,8 +164,12 @@ Chaque entraînement écrit dans son dossier (`out-nanopopixa/` par défaut, `ru
 | `run.json` | réglages et résultats de l'expérience (lus par `popixa runs`) |
 | `eval.json`, `samples.md` | avec `--eval` : `popixa eval` lancé sur `best.pt` en fin d'entraînement |
 
-Un nouvel entraînement dans un dossier déjà utilisé met l'ancien run de côté dans `prev/` (à sa première
-sauvegarde) ; arrêté avant, il remet l'ancien run en place à l'identique — rien n'est perdu.
+Un nouvel entraînement dans un dossier déjà utilisé met l'ancien run de côté dans `prev/` une fois sa
+première sauvegarde écrite ; arrêté avant (Ctrl+C, erreur, disque plein, ou même processus tué : rattrapé
+au lancement suivant), il remet l'ancien run en place à l'identique. `prev/` ne garde que **le run
+précédent** : l'ancien `prev/` est supprimé à cette première sauvegarde (un dossier par expérience avec
+`--run NOM` pour tout garder). Un seul entraînement à la fois par dossier : un 2e lancement dans un
+dossier où un entraînement tourne s'arrête sans rien toucher.
 
 La val loss est mesurée sur **les mêmes batchs à chaque évaluation** : deux points de la courbe sont
 comparables, `best.pt` et l'arrêt anticipé ne dépendent pas du hasard du tirage.
@@ -347,6 +351,7 @@ nanopopixa/
 ├── generation.py  # Génération : sampling · streaming · thinking · speculative · structured
 ├── train.py       # Entraînement : memmap · précision mixte · best.pt · arrêt anticipé · runs/
 ├── checkpoint.py  # Format de checkpoint 2 : chargement sûr (weights_only=True)
+├── runlock.py     # Verrou d'un dossier d'expérience (un entraînement à la fois)
 ├── chat.py        # REPL interactif : thinking blocks · effort levels · auto-compact
 ├── structured.py  # Structured outputs : matcher JSON Schema octet par octet + masques de tokens
 ├── session_cache.py # KV-cache persistant entre sessions

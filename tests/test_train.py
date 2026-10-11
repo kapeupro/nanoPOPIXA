@@ -312,8 +312,9 @@ def test_resume_restores_best_from_last_checkpoint(tmp_path):
     assert torch.load(str(run / "best.pt"), weights_only=True)["iter"] == 2
 
 
-def _interrupt_after(tmp_path, marker, *args):
-    """Lance train.py et lui envoie Ctrl+C (SIGINT) dès que `marker` apparaît dans sa sortie."""
+def _interrupt_after(tmp_path, marker, *args, kill=False):
+    """Lance train.py et lui envoie Ctrl+C (SIGINT) — ou SIGKILL (kill=True) — dès que `marker`
+    apparaît dans sa sortie."""
     import signal
     import threading
     env = dict(ENV, PYTHONUNBUFFERED="1")
@@ -333,7 +334,7 @@ def _interrupt_after(tmp_path, marker, *args):
     t.start()
     try:
         assert seen.wait(timeout=300) and marker in "".join(out) and p.poll() is None, "".join(out)
-        p.send_signal(signal.SIGINT)
+        p.send_signal(signal.SIGKILL if kill else signal.SIGINT)
         p.wait(timeout=120)
     finally:
         if p.poll() is None:
@@ -368,22 +369,116 @@ def test_new_run_interrupted_before_first_save_leaves_folder_unchanged(tmp_path)
     assert r.returncode == 0 and "déjà terminé" in r.stdout and "autre entraînement" not in r.stdout
 
 
+def _snapshot(folder, names=("checkpoint.pt", "best.pt", "train.log", "run.json")):
+    return {n: (folder / n).read_bytes() for n in names if (folder / n).exists()}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL POSIX")
 def test_new_run_moves_previous_run_to_prev_and_recovers_after_kill(tmp_path):
     """Nouveau run dans un dossier occupé : le précédent passe dans prev/ à la 1re sauvegarde ;
-    un lancement tué brutalement (prev.new/ resté) est rétabli au lancement suivant."""
+    un lancement tué brutalement (SIGKILL) avant est rétabli au lancement suivant."""
     (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
     assert _train(tmp_path, "--max_iters", "2", "--seed", "1").returncode == 0      # run A
     run = tmp_path / "out-nanopopixa"
-    a_ckpt = (run / "checkpoint.pt").read_bytes()
+    a_files = _snapshot(run)
+    (run / "eval.prev.json").write_text('{"run": "A"}', encoding="utf-8")         # fichier de A aussi
     assert _train(tmp_path, "--max_iters", "2", "--seed", "2").returncode == 0      # run B
-    assert (run / "prev" / "checkpoint.pt").read_bytes() == a_ckpt and not (run / "prev.new").exists()
-    b_files = {n: (run / n).read_bytes() for n in ("checkpoint.pt", "train.log", "run.json")}
-    # Simule un lancement C tué (SIGKILL) avant sa 1re sauvegarde : B dans prev.new/, débris de C
+    assert _snapshot(run / "prev") == a_files and not (run / "prev.new").exists()
+    assert (run / "prev" / "eval.prev.json").exists() and not (run / "eval.prev.json").exists()
+    b_files = _snapshot(run)
+    assert set(b_files) == {"checkpoint.pt", "best.pt", "train.log", "run.json"}
+    _interrupt_after(tmp_path, "iter     0", "--max_iters", "100000", "--eval_interval", "1000",
+                     "--seed", "3", kill=True)                                       # run C tué
+    assert (run / "prev.new").exists()
+    r = _train(tmp_path, "--resume", size=None)                                      # B est rétabli
+    assert r.returncode == 0 and "run d'avant restauré" in r.stdout, r.stdout + r.stderr
+    assert "depuis le checkpoint" not in r.stdout                  # best.pt de B remis, pas reconstruit
+    assert _snapshot(run) == b_files and _snapshot(run / "prev") == a_files
+
+
+def test_failed_first_save_keeps_previous_run(tmp_path):
+    """La 1re sauvegarde d'un nouveau run échoue (disque plein…) : le run précédent reste en place,
+    prev/ intact — rien n'est engagé avant que le checkpoint soit écrit."""
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2", "--seed", "1").returncode == 0      # run A → prev/
+    assert _train(tmp_path, "--max_iters", "2", "--seed", "2").returncode == 0      # run B
+    run = tmp_path / "out-nanopopixa"
+    a_files, b_files = _snapshot(run / "prev"), _snapshot(run)
+    (run / "checkpoint.pt.tmp").mkdir()                    # l'écriture du checkpoint va échouer
+    r = _train(tmp_path, "--max_iters", "2", "--seed", "3")                          # run C
+    assert r.returncode != 0 and "remis en place" in r.stdout, r.stdout + r.stderr
+    assert _snapshot(run) == b_files and _snapshot(run / "prev") == a_files
+    assert not (run / "prev.new").exists() and not (run / "prev.old").exists()
+
+
+def test_second_training_in_the_same_folder_is_refused(tmp_path):
+    """Un 2e train.py dans un dossier où un entraînement tourne (verrou tenu) s'arrête sans rien
+    toucher — il n'annule pas la mise de côté du premier."""
+    import runlock
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2").returncode == 0
+    run = tmp_path / "out-nanopopixa"
+    (run / "prev.new").mkdir()                             # état d'un nouveau run en cours
+    for n in ("checkpoint.pt", "best.pt"):
+        os.replace(run / n, run / "prev.new" / n)
+    (run / "prev.new" / ".complet").write_text("", encoding="utf-8")
+    before = sorted(str(p.relative_to(run)) for p in run.rglob("*"))
+    lock = runlock.acquire(str(run))
+    try:
+        for extra in (("--resume",), ("--max_iters", "2")):
+            r = _train(tmp_path, *extra, size=None)
+            assert r.returncode == 1 and "tourne déjà" in r.stdout, r.stdout + r.stderr
+            assert sorted(str(p.relative_to(run)) for p in run.rglob("*")) == before
+    finally:
+        lock.close()
+
+
+def test_recovery_after_kill_at_any_step_of_the_transaction(tmp_path):
+    """Arrêt brutal pendant la mise de côté, l'échange prev/ ↔ prev.new/ ou la suppression de
+    l'ancien prev/ : le lancement suivant retrouve un état complet, sans rien perdre."""
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2", "--seed", "1").returncode == 0      # run A → prev/
+    assert _train(tmp_path, "--max_iters", "2", "--seed", "2").returncode == 0      # run B
+    run = tmp_path / "out-nanopopixa"
+    a_files, b_files = _snapshot(run / "prev"), _snapshot(run)
+
+    def resume_ok():
+        r = _train(tmp_path, "--resume", size=None)
+        assert r.returncode == 0 and "déjà terminé" in r.stdout, r.stdout + r.stderr
+        assert "autre entraînement" not in r.stdout
+        assert _snapshot(run) == b_files and _snapshot(run / "prev") == a_files
+        assert not (run / "prev.new").exists() and not (run / "prev.old").exists()
+
+    # 1. Tué pendant la mise de côté (pas de marqueur) : rien n'est supprimé
+    (run / "prev.new").mkdir()
+    os.replace(run / "checkpoint.pt", run / "prev.new" / "checkpoint.pt")
+    resume_ok()
+    # 2. Tué pendant l'échange : prev/ → prev.old/ fait, prev.new/ (marqué) pas encore → prev/
+    os.replace(run / "prev", run / "prev.old")
     (run / "prev.new").mkdir()
     for n in b_files:
         os.replace(run / n, run / "prev.new" / n)
-    (run / "train.log").write_text("# débris du lancement tué\n", encoding="utf-8")
-    r = _train(tmp_path, "--resume", size=None)                                      # B est rétabli
-    assert r.returncode == 0 and "restauré" in r.stdout, r.stdout + r.stderr
-    for n, content in b_files.items():
-        assert (run / n).read_bytes() == content, n
+    (run / "prev.new" / ".complet").write_text("", encoding="utf-8")
+    (run / "train.log").write_text("# lancement tué\n", encoding="utf-8")
+    (run / "checkpoint.pt").write_bytes(b"checkpoint du lancement tu\xc3\xa9")
+    resume_ok()
+    # 3. Tué pendant la suppression de l'ancien prev/ (échange fait)
+    (run / "prev.old").mkdir()
+    (run / "prev.old" / "checkpoint.pt").write_bytes(b"reste")
+    resume_ok()
+
+
+def test_model_less_previous_files_do_not_replace_prev(tmp_path):
+    """Dossier sans modèle (run planté avant toute sauvegarde) mais prev/ avec un modèle : un
+    nouveau run ne remplace pas prev/ par ces fichiers."""
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2", "--seed", "1").returncode == 0      # run A → prev/
+    assert _train(tmp_path, "--max_iters", "2", "--seed", "2").returncode == 0      # run B
+    run = tmp_path / "out-nanopopixa"
+    a_files = _snapshot(run / "prev")
+    for n in ("checkpoint.pt", "best.pt"):
+        (run / n).unlink()
+    r = _train(tmp_path, "--max_iters", "2", "--seed", "3")                          # run C
+    assert r.returncode == 0 and "garde le run d'avant" in r.stdout, r.stdout + r.stderr
+    assert _snapshot(run / "prev") == a_files and (run / "checkpoint.pt").exists()
+    assert not (run / "prev.new").exists() and not (run / "prev.old").exists()

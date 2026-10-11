@@ -106,31 +106,76 @@ log_path  = os.path.join(out_dir, "train.log")
 run_path  = os.path.join(out_dir, "run.json")
 
 # ── Lancements transactionnels ────────────────────────────────────────────────
-# Un NOUVEL entraînement dans un dossier occupé met d'abord tout le run précédent de côté
-# (prev.new/) ; à sa 1re sauvegarde, prev.new/ devient prev/ (engagé). Interrompu ou planté
-# avant, le run précédent est remis en place à l'identique (même après un arrêt brutal :
-# rétabli au lancement suivant).
-RUN_FILES   = ("checkpoint.pt", "best.pt", "train.log", "run.json", "eval.json", "samples.md")
+# Un seul entraînement à la fois par dossier (verrou, runlock.py). Un NOUVEL entraînement dans un
+# dossier occupé met d'abord tout le run précédent de côté (prev.new/, marqueur .complet écrit en
+# dernier) ; une fois sa 1re sauvegarde ÉCRITE, prev.new/ devient prev/ (engagé) — prev/ ne garde
+# que le run précédent. Interrompu ou planté avant, le run précédent est remis en place à
+# l'identique ; après un arrêt brutal (même au milieu d'un déplacement), au lancement suivant.
+RUN_FILES   = ("checkpoint.pt", "best.pt", "train.log", "run.json", "eval.json", "samples.md",
+               "eval.prev.json", "samples.prev.md", "checkpoint.prev.pt")   # .prev.pt : sauvegarde ≤ 2.2
+MODEL_FILES = ("checkpoint.pt", "best.pt", "checkpoint.prev.pt")
 prev_dir    = os.path.join(out_dir, "prev")
 staging_dir = os.path.join(out_dir, "prev.new")
+old_dir     = os.path.join(out_dir, "prev.old")       # ancien prev/ (ou mise de côté jetée) à supprimer
+staged_mark = os.path.join(staging_dir, ".complet")   # mise de côté terminée
+
+
+def _has_model(folder: str) -> bool:
+    return any(os.path.exists(os.path.join(folder, n)) for n in MODEL_FILES)
 
 
 def _rollback_launch() -> bool:
-    """Remet en place le run mis de côté dans prev.new/ ; True s'il y en avait un."""
+    """Remet en place le run mis de côté dans prev.new/ ; True s'il y en avait un. Reprend sans
+    perte là où un arrêt brutal l'a laissé (mise de côté ou rollback à moitié faits)."""
     if not os.path.isdir(staging_dir):
         return False
-    for name in RUN_FILES:
-        cur = os.path.join(out_dir, name)
-        if os.path.exists(cur):
-            os.remove(cur)                 # fichiers du lancement avorté
+    if os.path.exists(staged_mark):
+        # Mise de côté complète : les fichiers du dossier sont ceux du lancement avorté
+        for name in RUN_FILES:
+            cur = os.path.join(out_dir, name)
+            if os.path.exists(cur):
+                os.remove(cur)
+        os.remove(staged_mark)
+    # Sans marqueur (arrêt pendant la mise de côté, ou pendant un rollback après les suppressions),
+    # le dossier ne contient que des fichiers du run d'avant : on ne supprime rien
     for name in os.listdir(staging_dir):
         os.replace(os.path.join(staging_dir, name), os.path.join(out_dir, name))
     os.rmdir(staging_dir)
     return True
 
 
-if _rollback_launch():
-    print(f"♻️  Lancement précédent arrêté avant sa 1re sauvegarde : run d'avant restauré dans {out_dir}/")
+def _recover_launch() -> bool:
+    """Lancement précédent arrêté brutalement : annule ce qu'il n'avait pas engagé. True si le
+    run d'avant a été remis en place."""
+    import shutil
+    if os.path.isdir(old_dir):
+        if os.path.isdir(staging_dir) and not os.path.isdir(prev_dir):
+            os.replace(old_dir, prev_dir)          # arrêté pendant l'échange : l'ancien prev/ revient
+        else:
+            shutil.rmtree(old_dir)                 # échange fait, suppression interrompue
+    return _rollback_launch()
+
+
+_lock = None
+
+
+def _lock_out_dir() -> None:
+    """Verrou du dossier pour toute la vie du processus — AVANT d'y toucher : un 2e lancement
+    dans le même dossier ne doit ni annuler la mise de côté du premier ni écrire dans son run."""
+    global _lock
+    if _lock is None:
+        import runlock
+        _lock = runlock.acquire(out_dir)
+        if _lock is None:
+            print(f"❌ Un entraînement tourne déjà dans {out_dir}/ — attends sa fin ou choisis "
+                  "un autre dossier (--run NOM, --out_dir)")
+            sys.exit(1)
+
+
+if os.path.isdir(out_dir):
+    _lock_out_dir()
+    if _recover_launch():
+        print(f"♻️  Lancement précédent arrêté avant sa 1re sauvegarde : run d'avant restauré dans {out_dir}/")
 
 resume_ckpt = None
 if args.resume:
@@ -145,7 +190,9 @@ if args.resume:
             print(f"❌ {v1_error}")
             sys.exit(1)
     else:
-        print("⚠️  Aucun checkpoint trouvé — démarrage depuis 0")
+        print("⚠️  Aucun checkpoint trouvé — démarrage depuis 0"
+              + (f" (le run d'avant est dans {prev_dir}/ : remets ses fichiers dans {out_dir}/ pour le reprendre)"
+                 if _has_model(prev_dir) else ""))
 
 # Identité du run (graine, batchs d'évaluation) : --option, sinon celle du run repris, sinon défaut.
 # Reprendre avec une autre graine ou d'autres batchs de validation rendrait les val loss (best.pt,
@@ -481,6 +528,7 @@ optimizer = torch.optim.AdamW([{"params": _decay, "weight_decay": weight_decay},
                               lr=learning_rate, betas=betas)
 
 os.makedirs(out_dir, exist_ok=True)
+_lock_out_dir()
 
 # ── Reprise depuis checkpoint ──────────────────────────────────────────────────
 # "iter" = nombre d'itérations d'entraînement DÉJÀ effectuées au moment de la sauvegarde
@@ -543,8 +591,14 @@ else:
         os.makedirs(staging_dir)
         for name in _old:
             os.replace(os.path.join(out_dir, name), os.path.join(staging_dir, name))
-        print(f"📦 Run précédent mis de côté → {prev_dir}/ ({', '.join(_old)}) — restauré si ce lancement "
-              "s'arrête avant sa 1re sauvegarde ; --resume pour reprendre au lieu de repartir de 0")
+        open(staged_mark, "w").close()            # en dernier : la mise de côté est complète
+        if _has_model(staging_dir) or not _has_model(prev_dir):
+            dest = f"{prev_dir}/ à la 1re sauvegarde" + (" (remplace l'ancien prev/)"
+                                                       if os.path.isdir(prev_dir) else "")
+        else:
+            dest = f"supprimé à la 1re sauvegarde, sans modèle ({prev_dir}/ garde le run d'avant)"
+        print(f"📦 Run précédent mis de côté ({', '.join(_old)}) → {dest} — remis en place si ce "
+              "lancement s'arrête avant ; --resume pour reprendre au lieu de repartir de 0")
 
 
 def _payload(it: int) -> dict:
@@ -572,20 +626,20 @@ def _payload(it: int) -> dict:
 
 def save_checkpoint(it: int, stopped_early: bool = False) -> None:
     """checkpoint.pt : modèle + optimizer (pour --resume). it = itérations effectuées."""
-    _commit_launch()
     if best_iter is None and os.path.exists(best_path):
         os.remove(best_path)        # best.pt d'un autre run (reprise) : jamais mélangé avec celui-ci
     payload = _payload(it)
     payload.update(optimizer=optimizer.state_dict(), bad_evals=bad_evals, stopped_early=stopped_early)
     _write_checkpoint(ckpt_path, payload)
+    _commit_launch()            # seulement une fois le checkpoint écrit (disque plein, Ctrl+C…)
 
 
 def save_best(it: int, val: float) -> None:
     """best.pt : poids à la meilleure val loss (sans optimizer : plus léger, pour chat / eval)."""
-    _commit_launch()
     payload = _payload(it)
     payload["val_loss"] = val
     _write_checkpoint(best_path, payload)
+    _commit_launch()
 
 
 def write_run_json(**results) -> None:
@@ -629,15 +683,28 @@ _committed = resume_ckpt_loaded or not os.path.isdir(staging_dir)
 
 
 def _commit_launch() -> None:
-    """1re sauvegarde d'un nouveau run : le run précédent mis de côté devient prev/."""
+    """1re sauvegarde ÉCRITE d'un nouveau run : le run mis de côté devient prev/ (l'ancien prev/
+    est supprimé). Une mise de côté sans modèle (run planté avant toute sauvegarde) ne remplace
+    pas un prev/ qui en a un : elle est jetée. Renommages d'abord, suppression ensuite : un arrêt
+    à n'importe quel moment est rattrapé au lancement suivant (_recover_launch)."""
     global _committed
     if _committed:
         return
-    _committed = True
     import shutil
-    if os.path.isdir(prev_dir):
-        shutil.rmtree(prev_dir)
-    os.replace(staging_dir, prev_dir)
+    if os.path.isdir(old_dir):
+        shutil.rmtree(old_dir)
+    if _has_model(staging_dir) or not _has_model(prev_dir):
+        if os.path.isdir(prev_dir):
+            os.replace(prev_dir, old_dir)
+        os.replace(staging_dir, prev_dir)        # ← engagé
+    else:
+        os.replace(staging_dir, old_dir)         # ← engagé (mise de côté jetée)
+    _committed = True
+    for cleanup in (lambda: os.remove(os.path.join(prev_dir, ".complet")), lambda: shutil.rmtree(old_dir)):
+        try:
+            cleanup()
+        except OSError:
+            pass                                 # rattrapé au lancement suivant
 
 
 if iter_start < max_iters:
@@ -733,7 +800,7 @@ try:
         if improved:
             save_best(max_iters, losses["val"])
 except BaseException as e:   # Ctrl+C, manque de mémoire, NaN… : run.json ne reste pas « en cours »
-    if not _committed and _rollback_launch():
+    if not _committed and _recover_launch():
         print(f"\n⏹  Arrêt avant la première sauvegarde : le run précédent est remis en place dans {out_dir}/")
     else:
         write_run_json(status="interrompu" if isinstance(e, KeyboardInterrupt) else f"erreur ({type(e).__name__})",
