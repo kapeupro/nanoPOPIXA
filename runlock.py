@@ -40,11 +40,13 @@ else:
 def acquire(out_dir: str, wait: float = 1.0):
     """
     Verrou exclusif sur out_dir (qui doit exister). Retourne le fichier ouvert, à garder jusqu'à
-    la fin de l'entraînement, ou None si un autre entraînement le tient. Le court délai `wait`
+    la fin de l'entraînement, ou None si un autre entraînement le tient (ou si .train.lock existe
+    mais est illisible : on ne peut pas savoir). Le court délai `wait`
     couvre le test de popixa monitor (is_active), qui prend le verrou une fraction de milliseconde.
     Pas de protection plutôt qu'un refus quand le verrou est impossible : système de fichiers sans
     verrous (certains montages réseau) → fichier retourné quand même ; dossier non inscriptible
-    sans .train.lock (run < 2.3 archivé en lecture seule) → False.
+    sans .train.lock (run < 2.3 archivé en lecture seule) → False (train.py refuse alors : il
+    devrait écrire dans le dossier).
     """
     path = os.path.join(out_dir, LOCK_NAME)
     try:
@@ -52,8 +54,10 @@ def acquire(out_dir: str, wait: float = 1.0):
     except OSError:
         try:
             f = open(path, "r")       # .train.lock d'un autre utilisateur, montage en lecture seule
-        except OSError:
-            return False
+        except OSError as e:
+            # Absent (dossier non inscriptible) → False ; présent mais illisible (verrou d'un autre
+            # utilisateur) → impossible de savoir si un entraînement tourne : None (refus)
+            return False if e.errno == errno.ENOENT else None
     deadline = time.monotonic() + wait
     while True:
         try:

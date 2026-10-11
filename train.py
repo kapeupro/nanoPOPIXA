@@ -139,6 +139,21 @@ def _remove(path: str) -> None:
         pass
 
 
+def _rmtree_ours(folder: str) -> None:
+    """Supprime un dossier de train.py (prev.old/), marqueur .transaction en DERNIER : une
+    suppression interrompue laisse un dossier encore marqué (repris) ou vide (_check_reserved)."""
+    import shutil
+    for name in os.listdir(folder):
+        if name != TX_MARK:
+            path = os.path.join(folder, name)
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+    _remove(os.path.join(folder, TX_MARK))
+    os.rmdir(folder)
+
+
 def _check_reserved() -> None:
     """prev.new/ ou prev.old/ sans le marqueur de train.py : vide → création interrompue, supprimé ;
     sinon dossier de l'utilisateur → on s'arrête sans rien toucher."""
@@ -176,13 +191,12 @@ def _rollback_launch() -> bool:
 def _recover_launch() -> bool:
     """Lancement précédent arrêté brutalement : annule ce qu'il n'avait pas engagé. True si le
     run d'avant a été remis en place."""
-    import shutil
     if os.path.isdir(old_dir) and _ours(old_dir):
         if os.path.isdir(staging_dir) and not os.path.isdir(prev_dir):
             os.replace(old_dir, prev_dir)          # arrêté pendant l'échange : l'ancien prev/ revient
             _remove(os.path.join(prev_dir, TX_MARK))
         else:
-            shutil.rmtree(old_dir)                 # échange fait, suppression interrompue
+            _rmtree_ours(old_dir)                  # échange fait, suppression interrompue
     return _rollback_launch()
 
 
@@ -196,9 +210,18 @@ def _lock_out_dir() -> None:
     if _lock is None:
         import runlock
         _lock = runlock.acquire(out_dir)
+        lock_file = os.path.join(out_dir, runlock.LOCK_NAME)
+        if _lock is None and not os.access(lock_file, os.R_OK):
+            print(f"❌ {lock_file} illisible (verrou d'un autre utilisateur ?) — un entraînement y tourne "
+                  "peut-être ; rien n'a été modifié")
+            sys.exit(1)
         if _lock is None:
             print(f"❌ Un entraînement tourne déjà dans {out_dir}/ — attends sa fin ou choisis "
                   "un autre dossier (--run NOM, --out_dir)")
+            sys.exit(1)
+        if _lock is False or not os.access(out_dir, os.W_OK):
+            print(f"❌ {out_dir}/ n'est pas inscriptible — copie le run dans un dossier à toi "
+                  "(--out_dir) ; rien n'a été modifié")
             sys.exit(1)
 
 
@@ -619,11 +642,15 @@ else:
     # Nouvel entraînement : on ne détruit jamais silencieusement un run existant (voir plus haut)
     _old = [n for n in RUN_FILES if os.path.exists(os.path.join(out_dir, n))]
     if _old:
-        os.makedirs(staging_dir)
-        open(os.path.join(staging_dir, TX_MARK), "w").close()     # en premier : dossier de train.py
-        for name in _old:
-            os.replace(os.path.join(out_dir, name), os.path.join(staging_dir, name))
-        open(staged_mark, "w").close()            # en dernier : la mise de côté est complète
+        try:
+            os.makedirs(staging_dir)
+            open(os.path.join(staging_dir, TX_MARK), "w").close()     # en premier : dossier de train.py
+            for name in _old:
+                os.replace(os.path.join(out_dir, name), os.path.join(staging_dir, name))
+            open(staged_mark, "w").close()            # en dernier : la mise de côté est complète
+        except BaseException:
+            _rollback_launch()                        # mise de côté à moitié faite : tout revient
+            raise
         if _has_model(staging_dir) or not _has_model(prev_dir):
             dest = f"{prev_dir}/ à la 1re sauvegarde" + (" (remplace l'ancien prev/)"
                                                        if os.path.isdir(prev_dir) else "")
@@ -726,11 +753,10 @@ def _commit_launch() -> None:
     global _committed
     if _committed:
         return
-    import shutil
     if os.path.isdir(old_dir):
         if not _ours(old_dir):
             raise RuntimeError(f"{old_dir}/ n'a pas été créé par train.py (nom réservé) — renomme-le")
-        shutil.rmtree(old_dir)
+        _rmtree_ours(old_dir)
     if _has_model(staging_dir) or not _has_model(prev_dir):
         if os.path.isdir(prev_dir):
             open(os.path.join(prev_dir, TX_MARK), "w").close()
@@ -742,7 +768,7 @@ def _commit_launch() -> None:
     _remove(os.path.join(prev_dir, ".complet"))
     _remove(os.path.join(prev_dir, TX_MARK))
     try:
-        shutil.rmtree(old_dir)
+        _rmtree_ours(old_dir)
     except OSError:
         pass                                     # rattrapé au lancement suivant
 
@@ -755,10 +781,15 @@ if iter_start < max_iters:
             if os.path.exists(_path):
                 _stem, _ext = os.path.splitext(_old_eval)
                 os.replace(_path, os.path.join(out_dir, f"{_stem}.prev{_ext}"))
-    with open(log_path, "a" if resume_ckpt_loaded else "w", encoding="utf-8") as f:
-        f.write(f"# max_iters={max_iters} eval_interval={eval_interval}"
-                f" batch_size={batch_size * gradient_accumulation_steps} block_size={block_size}\n")
-    write_run_json(status="en cours")
+    try:
+        with open(log_path, "a" if resume_ckpt_loaded else "w", encoding="utf-8") as f:
+            f.write(f"# max_iters={max_iters} eval_interval={eval_interval}"
+                    f" batch_size={batch_size * gradient_accumulation_steps} block_size={block_size}\n")
+        write_run_json(status="en cours")
+    except BaseException:                        # disque plein, Ctrl+C : comme dans la boucle
+        if not _committed and _recover_launch():
+            print(f"\n⏹  Arrêt avant la première sauvegarde : le run précédent est remis en place dans {out_dir}/")
+        raise
 if _restore_best:
     # Mêmes poids que checkpoint.pt : écriture directe, sans engager de lancement
     _write_checkpoint(best_path, dict(_payload(best_iter), val_loss=best_val))

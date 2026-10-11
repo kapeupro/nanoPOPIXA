@@ -416,6 +416,48 @@ def test_failed_first_save_keeps_previous_run(tmp_path):
     assert sorted(p.name for p in run.iterdir()) == sorted([*b_files, "prev", ".train.lock"])
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_FSIZE POSIX")
+def test_failure_before_the_training_loop_restores_previous_run(tmp_path):
+    """Disque plein dès l'écriture de train.log (après la mise de côté, avant la boucle) : le run
+    précédent est remis en place tout de suite, pas laissé caché dans prev.new/."""
+    import resource
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2").returncode == 0
+    run = tmp_path / "out-nanopopixa"
+    before = _snapshot(run)
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "train.py"), "--size", "nano", "--batch_size", "2",
+                        "--max_iters", "2", "--seed", "3"], cwd=str(tmp_path), env=ENV, capture_output=True,
+                       text=True, timeout=600,
+                       preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (10, 10)))
+    assert r.returncode != 0 and "remis en place" in r.stdout, r.stdout + r.stderr
+    assert _snapshot(run) == before and not (run / "prev.new").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="droits POSIX (root lit tout)")
+def test_unwritable_folder_or_unreadable_lock_is_refused_cleanly(tmp_path):
+    """Dossier non inscriptible, ou .train.lock d'un autre utilisateur illisible : message clair,
+    rien n'est modifié (et jamais deux entraînements sans verrou dans le même dossier)."""
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2").returncode == 0
+    run = tmp_path / "out-nanopopixa"
+    before = _snapshot(run)
+    lock = run / ".train.lock"
+    try:
+        lock.chmod(0o000)
+        r = _train(tmp_path, "--max_iters", "2", "--seed", "2")
+        assert r.returncode == 1 and "illisible" in r.stdout, r.stdout + r.stderr
+        lock.chmod(0o644)
+        lock.unlink()                                      # run < 2.3 archivé en lecture seule
+        run.chmod(0o555)
+        r = _train(tmp_path, "--resume", "--max_iters", "4", size=None)
+        assert r.returncode == 1 and "pas inscriptible" in r.stdout, r.stdout + r.stderr
+    finally:
+        run.chmod(0o755)
+        if lock.exists():
+            lock.chmod(0o644)
+    assert _snapshot(run) == before
+
+
 def test_second_training_in_the_same_folder_is_refused(tmp_path):
     """Un 2e train.py dans un dossier où un entraînement tourne (verrou tenu) s'arrête sans rien
     toucher — il n'annule pas la mise de côté du premier."""

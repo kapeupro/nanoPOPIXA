@@ -117,3 +117,21 @@ def test_directory_and_newer_format(tmp_path):
     logs = []
     assert load_checkpoint(path, log=logs.append)["config"] == m.config
     assert any("plus récente" in l for l in logs)
+
+
+@pytest.mark.parametrize("error", [OSError(28, "No space left on device"), KeyboardInterrupt()])
+def test_failed_save_keeps_the_previous_file_and_leaves_no_tmp(tmp_path, monkeypatch, error):
+    """Écriture interrompue (disque plein, Ctrl+C) : l'ancien checkpoint reste intact, pas de .tmp partiel."""
+    import checkpoint
+    path = str(tmp_path / "checkpoint.pt")
+    save_checkpoint(path, {"model": {}, "iter": 1})
+    before = open(path, "rb").read()
+
+    def partial_save(obj, f):
+        with open(f, "wb") as out:
+            out.write(b"partiel")
+        raise error
+    monkeypatch.setattr(checkpoint.torch, "save", partial_save)
+    with pytest.raises(type(error)):
+        save_checkpoint(path, {"model": {}, "iter": 2})
+    assert open(path, "rb").read() == before and not os.path.exists(path + ".tmp")
