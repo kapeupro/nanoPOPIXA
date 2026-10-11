@@ -183,24 +183,21 @@ def cmd_chat(args):
              repetition_penalty=penalty, top_p=top_p)
 
 
+# Options de popixa train relayées telles quelles à train.py (None / False = non passée)
+_TRAIN_OPTIONS = ("size", "data_dir", "input", "resume", "longrope", "max_iters", "batch_size", "seed",
+                  "out_dir", "run", "patience", "dtype", "eval", "eval_interval", "eval_iters", "grad_accum")
+
+
 def cmd_train(args):
     import sys as _sys
     import runpy, os
-    _sys.argv = ["train.py"] + (["--size", args.size] if args.size else [])
-    if args.data_dir:
-        _sys.argv += ["--data_dir", args.data_dir]
-    if args.input:
-        _sys.argv += ["--input", args.input]
-    if args.resume:
-        _sys.argv += ["--resume"]
-    if args.longrope:
-        _sys.argv += ["--longrope"]
-    if args.max_iters is not None:
-        _sys.argv += ["--max_iters", str(args.max_iters)]
-    if args.batch_size is not None:
-        _sys.argv += ["--batch_size", str(args.batch_size)]
-    if args.seed is not None:
-        _sys.argv += ["--seed", str(args.seed)]
+    _sys.argv = ["train.py"]
+    for name in _TRAIN_OPTIONS:
+        value = getattr(args, name, None)
+        if value is True:
+            _sys.argv.append(f"--{name}")
+        elif value not in (None, False):
+            _sys.argv += [f"--{name}", str(value)]
     train_path = os.path.join(os.path.dirname(__file__), "train.py")
     runpy.run_path(train_path, run_name="__main__")
 
@@ -228,9 +225,55 @@ def cmd_collect(args):
     collect_code(args.source_dir, args.data_dir, exts)
 
 
+def _default_log(run: str = None) -> str:
+    """train.log du run nommé, sinon celui du dossier par défaut, sinon ./train.log (< 2.3)."""
+    if run:
+        return os.path.join("runs", run, "train.log")
+    for path in (os.path.join("out-nanopopixa", "train.log"), "train.log"):
+        if os.path.exists(path):
+            return path
+    return os.path.join("out-nanopopixa", "train.log")
+
+
 def cmd_monitor(args):
     from monitor import run_monitor
-    run_monitor(args.log, args.refresh)
+    run_monitor(args.log or _default_log(args.run), args.refresh)
+
+
+def cmd_runs(args):
+    """Tableau des expériences (runs/*/run.json + out-nanopopixa) : réglages et résultats."""
+    import glob
+    import json
+    dirs = sorted(glob.glob(os.path.join(args.dir, "*", "run.json")))
+    if os.path.exists(os.path.join("out-nanopopixa", "run.json")):
+        dirs.insert(0, os.path.join("out-nanopopixa", "run.json"))
+    if not dirs:
+        print(INFO_C + f"  Aucune expérience ({args.dir}/NOM/run.json) — popixa train --run NOM" + R)
+        return
+    rows = []
+    for path in dirs:
+        try:
+            with open(path, encoding="utf-8") as f:
+                run = json.load(f)
+        except (OSError, ValueError):
+            continue
+        ev = {}
+        ev_path = os.path.join(os.path.dirname(path), "eval.json")
+        if os.path.exists(ev_path):
+            try:
+                with open(ev_path, encoding="utf-8") as f:
+                    ev = json.load(f).get("tasks", {})
+            except (OSError, ValueError):
+                ev = {}
+        fmt = lambda v, f: f.format(v) if isinstance(v, (int, float)) else "—"
+        rows.append((os.path.dirname(path), run.get("size", "?"), fmt(run.get("max_iters"), "{:,}"),
+                     fmt(run.get("best_val"), "{:.4f}"), fmt(ev.get("bpb", {}).get("bpb"), "{:.3f}"),
+                     fmt(ev.get("paires", {}).get("accuracy"), "{:.1%}"), run.get("status", "?")))
+    head = ("expérience", "taille", "iters", "best val", "bpb", "paires", "statut")
+    widths = [max(len(str(r[i])) for r in rows + [head]) for i in range(len(head))]
+    for i, r in enumerate([head] + rows):
+        line = "  " + "  ".join(str(c).ljust(w) for c, w in zip(r, widths))
+        print((CMD_C + line + R) if i == 0 else line)
 
 
 def cmd_gen(args):
@@ -368,15 +411,19 @@ def cmd_bench(args):
         sys.exit(1)
     print(INFO_C + f"  Benchmark preset {args.size} (entraînement ≈ {args.seconds / 2:.0f} s — au moins "
           f"2 pas, plus long sur CPU pour small/medium —, puis génération)…" + R, file=sys.stderr)
-    r = run_bench(size=args.size, vocab_size=args.vocab, batch_size=args.batch,
-                  seconds=args.seconds, dropout=args.dropout)
+    try:
+        r = run_bench(size=args.size, vocab_size=args.vocab, batch_size=args.batch,
+                      seconds=args.seconds, dropout=args.dropout, dtype=args.dtype)
+    except ValueError as e:
+        print(ERR_C + f"  ✗ {e}" + R, file=sys.stderr)
+        sys.exit(1)
     if args.json:
         print(json.dumps(r, indent=2, sort_keys=True))
         return
     print(CMD_C + f"  {r['size']} · {r['params'] / 1e6:.1f}M params · vocab {r['vocab_size']} · "
           f"{r['device']} · torch {r['torch']}" + R)
     print(f"  Entraînement : {r['train_tok_s']:,.0f} tokens/s  (batch {r['batch_size']} × "
-          f"{r['block_size']}, dropout {r['dropout']}, {r['train_steps']} pas) · "
+          f"{r['block_size']}, dropout {r['dropout']}, {r['dtype']}, {r['train_steps']} pas) · "
           f"{r['train_tflops']:.3f} TFLOPS effectifs")
     print(f"  Génération   : {r['gen_tok_s']:,.0f} tokens/s (greedy, KV-cache)")
     print(f"  Mémoire      : {r['peak_memory_mb']:,.0f} Mo ({r['memory_kind']})")
@@ -411,6 +458,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--max_iters",  type=int, default=None)
     p_train.add_argument("--batch_size", type=int, default=None)
     p_train.add_argument("--seed",       type=int, default=None)
+    p_train.add_argument("--out_dir",    default=None)
+    p_train.add_argument("--run",        default=None)
+    p_train.add_argument("--patience",   type=int, default=None)
+    p_train.add_argument("--dtype",      default=None, choices=["auto", "float32", "bfloat16", "float16"])
+    p_train.add_argument("--eval",       action="store_true")
+    p_train.add_argument("--eval_interval", type=int, default=None)
+    p_train.add_argument("--eval_iters",    type=int, default=None)
+    p_train.add_argument("--grad_accum",    type=int, default=None)
 
     # ── prep ──────────────────────────────────────────────────────────
     p_prep = sub.add_parser("prep")
@@ -427,7 +482,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── monitor ───────────────────────────────────────────────────────
     p_mon = sub.add_parser("monitor")
-    p_mon.add_argument("--log",     default="train.log")
+    p_mon.add_argument("--log",     default=None,
+                       help="Fichier de log (défaut : celui de --run, sinon out-nanopopixa/train.log)")
+    p_mon.add_argument("--run",     default=None)
+
+    # ── runs ──────────────────────────────────────────────────────────
+    p_runs = sub.add_parser("runs")
+    p_runs.add_argument("--dir", default="runs")
     p_mon.add_argument("--refresh", type=_positive_float, default=1.0)
 
     # ── scrape ────────────────────────────────────────────────────────
@@ -481,6 +542,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--seconds", type=_positive_float, default=15.0)
     p_bench.add_argument("--dropout", type=float, default=0.1,
                          help="dropout pendant la mesure (0.1 = train.py ; 0 = sans dropout)")
+    p_bench.add_argument("--dtype",   default="float32", choices=["float32", "bfloat16", "float16"],
+                         help="précision mesurée (autocast) : comparer float32 et bfloat16 sur ta machine")
     p_bench.add_argument("--json",    action="store_true")
 
     return parser
@@ -492,6 +555,7 @@ _DISPATCH = {
     "prep":    cmd_prep,
     "collect": cmd_collect,
     "monitor": cmd_monitor,
+    "runs":    cmd_runs,
     "scrape":  cmd_scrape,
     "gen":     cmd_gen,
     "eval":    cmd_eval,

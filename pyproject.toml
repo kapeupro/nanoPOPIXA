@@ -28,6 +28,7 @@ py-modules = [
     "model",
     "train",
     "chat",
+    "checkpoint",
     "data_prep",
     "scrape",
     "popixa_cli",

@@ -134,7 +134,8 @@ popixa gen                 → générer du texte (non-interactif)
 popixa eval                → évaluer un checkpoint (bpb, paires FR, échantillons) → eval.json
 popixa bench               → débit d'entraînement / génération de TA machine
 popixa --version           → version installée
-popixa monitor             → dashboard live de la loss
+popixa monitor             → dashboard live de la loss (--run NOM)
+popixa runs                → tableau des expériences (runs/*) : réglages, best val, bpb, paires
 popixa scrape              → crawler web → corpus
 popixa collect SOURCE_DIR  → assembler du code source en corpus
 ```
@@ -147,7 +148,28 @@ popixa train --data_dir data/                   # small (défaut)
 popixa train --data_dir data/ --seed 42         # graine : init, dropout et batchs reproductibles
 popixa train --data_dir data/ --resume          # reprendre depuis checkpoint
 popixa train --size nano --data_dir data/ --longrope   # rope_base=500k (la fenêtre reste block_size)
+popixa train --data_dir data/ --run hugo-nano --size nano --eval   # expérience nommée + popixa eval à la fin
+popixa train --data_dir data/ --patience 5      # arrêt si 5 évaluations sans progrès de la val loss
+popixa train --data_dir data/ --dtype bfloat16  # précision mixte (auto : bfloat16 sur GPU CUDA)
+popixa train --data_dir data/ --batch_size 4 --grad_accum 4   # batch effectif 16, mémoire d'un batch de 4
 ```
+
+Chaque entraînement écrit dans son dossier (`out-nanopopixa/` par défaut, `runs/NOM/` avec `--run`) :
+
+| Fichier | Contenu |
+|---|---|
+| `checkpoint.pt` | dernier état, optimiseur compris (pour `--resume`) |
+| `best.pt` | poids à la **meilleure val loss** — à utiliser pour `chat` / `eval` (`--checkpoint runs/NOM/best.pt`) |
+| `train.log` | courbe de loss (lue par `popixa monitor`) |
+| `run.json` | réglages et résultats de l'expérience (lus par `popixa runs`) |
+| `eval.json`, `samples.md` | avec `--eval` : `popixa eval` lancé sur `best.pt` en fin d'entraînement |
+
+La val loss est mesurée sur **les mêmes batchs à chaque évaluation** : deux points de la courbe sont
+comparables, `best.pt` et l'arrêt anticipé ne dépendent pas du hasard du tirage.
+
+Les checkpoints sont au **format 2** : uniquement des tenseurs et des types simples, chargés avec
+`torch.load(weights_only=True)` — ouvrir un checkpoint téléchargé ne peut pas exécuter de code.
+Les checkpoints des versions précédentes restent lisibles (et sont réécrits au format 2 à la reprise).
 
 > `--resume` reprend l'architecture du checkpoint et les réglages d'entraînement de son dernier
 > lancement (batch, LR, `max_iters`, `--batch_size` / `--max_iters` compris). Un `--batch_size` ou
@@ -279,8 +301,13 @@ temps pour 1 milliard de tokens d'entraînement sur ta machine.
 ### Entraînement
 - **Cosine LR scheduling** avec warmup linéaire
 - **Gradient clipping** (1.0)
-- **Gradient accumulation** — simuler de grands batches
-- **Checkpoint resume** — reprendre un entraînement interrompu
+- **Gradient accumulation** (`--grad_accum`) — simuler de grands batches
+- **Données en memmap** — `train.bin` reste sur disque : un corpus de plusieurs Go s'entraîne sans
+  le charger en RAM
+- **Weight decay** (0.1) sur les seules matrices — pas sur les poids des RMSNorm
+- **Précision mixte** (`--dtype`) — bfloat16 / float16 en autocast, GradScaler pour float16
+- **Meilleur checkpoint** (`best.pt`) et **arrêt anticipé** (`--patience`)
+- **Checkpoint resume** — reprendre un entraînement interrompu, avec ses réglages
 - **Graine fixe** (`--seed`, défaut 1337) — sur CPU, deux entraînements identiques donnent les mêmes
   poids, bit à bit (sur GPU, certains noyaux ne sont pas déterministes)
 - **Streaming token par token** en chat

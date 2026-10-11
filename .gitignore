@@ -23,3 +23,6 @@ train.log
 # Divers
 docs/
 .github/.DS_Store
+
+# Copies de travail isolées des workflows Claude Code
+.claude/worktrees/

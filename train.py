@@ -1,18 +1,23 @@
 """
 nanoPOPIXA — Script d'entraînement
-Supporte : gradient clipping, cosine LR scheduling, données binaires pré-traitées
+Supporte : gradient clipping, cosine LR scheduling avec warmup, données binaires lues sans tout
+charger en mémoire (memmap), précision mixte (--dtype), weight decay sur les seules matrices,
+meilleur checkpoint (best.pt) et arrêt anticipé (--patience), un dossier par expérience (--run).
 Usage :
     python train.py                         # texte brut (input.txt)
     python train.py --data_dir data/        # données pré-traitées par data_prep.py
+    python train.py --data_dir data/ --run hugo-nano --size nano --eval
 """
 
 import os
 import sys
+import json
 import math
 import time
 import pickle
 import random
 import argparse
+import contextlib
 
 import numpy as np
 import torch
@@ -24,6 +29,7 @@ except ImportError:
     _HAS_TIKTOKEN = False
 
 from model import nanoPOPIXA, POPIXAConfig, SIZE_PRESETS, checkpoint_v1_error
+from checkpoint import load_checkpoint, save_checkpoint as _write_checkpoint
 
 
 # ─────────────────────────────────────────
@@ -44,7 +50,33 @@ parser.add_argument("--max_iters",  type=int, default=None, help="Surcharge du n
 parser.add_argument("--batch_size", type=int, default=None, help="Surcharge de la taille de batch du preset")
 parser.add_argument("--seed",       type=int, default=1337,
                     help="Graine : initialisation, dropout et tirage des batchs reproductibles")
+parser.add_argument("--out_dir",    default="out-nanopopixa",
+                    help="Dossier de l'expérience : checkpoint.pt, best.pt, train.log, run.json")
+parser.add_argument("--run",        default=None,
+                    help="Nom d'expérience : équivaut à --out_dir runs/NOM")
+parser.add_argument("--patience",   type=int, default=None,
+                    help="Arrêt anticipé après N évaluations sans amélioration de la val loss "
+                         "(défaut : désactivé ; en reprise, celle du run)")
+parser.add_argument("--dtype",      default="auto", choices=["auto", "float32", "bfloat16", "float16"],
+                    help="Précision : auto = bfloat16 (ou float16) sur GPU CUDA, float32 ailleurs ; "
+                         "bfloat16 possible sur Mac (MPS) et CPU — à mesurer avec popixa bench --dtype")
+parser.add_argument("--grad_accum",    type=int, default=None,
+                    help="Accumulation de gradient : batch effectif = batch_size × N, mémoire d'un seul batch")
+parser.add_argument("--eval_interval", type=int, default=100, help="Évaluation (et sauvegarde) toutes les N itérations")
+parser.add_argument("--eval_iters",    type=int, default=10,  help="Batchs par évaluation de la loss")
+parser.add_argument("--eval",       action="store_true",
+                    help="En fin d'entraînement : popixa eval sur best.pt → eval.json + samples.md du run")
 args = parser.parse_args()
+if args.run:
+    if os.path.basename(os.path.normpath(args.run)) != args.run or args.run in (".", ".."):
+        parser.error(f"--run : un simple nom attendu (reçu {args.run!r})")
+    args.out_dir = os.path.join("runs", args.run)
+if args.patience is not None and args.patience < 0:
+    parser.error("--patience doit être ≥ 0 (0 = désactivé)")
+if args.eval_interval < 1 or args.eval_iters < 1:
+    parser.error("--eval_interval et --eval_iters doivent être ≥ 1")
+if args.grad_accum is not None and args.grad_accum < 1:
+    parser.error("--grad_accum doit être ≥ 1")
 
 # ── Reproductibilité ──────────────────────────────────────────────────────────
 random.seed(args.seed)
@@ -56,13 +88,20 @@ torch.manual_seed(args.seed)
 # Hyperparamètres
 # ─────────────────────────────────────────
 
-out_dir = "out-nanopopixa"
+out_dir   = args.out_dir
+ckpt_path = os.path.join(out_dir, "checkpoint.pt")      # dernier état (reprise)
+best_path = os.path.join(out_dir, "best.pt")            # meilleure val loss (chat / eval)
+log_path  = os.path.join(out_dir, "train.log")
+run_path  = os.path.join(out_dir, "run.json")
 
-ckpt_path   = os.path.join(out_dir, "checkpoint.pt")
 resume_ckpt = None
 if args.resume:
     if os.path.exists(ckpt_path):
-        resume_ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        try:
+            resume_ckpt = load_checkpoint(ckpt_path, map_location="cpu")
+        except ValueError as e:
+            print(f"❌ {e}")
+            sys.exit(1)
         v1_error = checkpoint_v1_error(resume_ckpt.get("model", {}))
         if v1_error:
             print(f"❌ {v1_error}")
@@ -116,23 +155,28 @@ if _saved:
     max_iters     = _saved.get("max_iters", max_iters)
     learning_rate = _saved.get("learning_rate", learning_rate)
     warmup_iters  = _saved.get("warmup_iters", warmup_iters)
+# Arrêt anticipé : --patience, sinon celle du run repris, sinon désactivé (0)
+patience = args.patience if args.patience is not None else (_saved.get("patience") or 0)
 if args.max_iters is not None:
     max_iters    = max(1, args.max_iters)
     warmup_iters = min(_TRAIN_PRESETS[size][3], max(1, max_iters // 10))
 if args.batch_size is not None:
     batch_size = max(1, args.batch_size)
 
-dropout    = 0.1
+dropout    = 0.1          # dropout résiduel et embedding (l'attention n'en a pas : noyau SDPA rapide)
 min_lr     = learning_rate / 10
 lr_decay_iters  = max_iters
 grad_clip       = 1.0
+weight_decay    = 0.1      # sur les matrices seulement (pas les normalisations RMSNorm)
+betas           = (0.9, 0.95)
 
-# Évaluation — toutes les 100 iters, moyenne sur 10 batches
-eval_interval   = 100
-eval_iters      = 10
+# Évaluation — toutes les eval_interval iters, moyenne sur eval_iters batchs (fixes)
+eval_interval   = args.eval_interval
+eval_iters      = args.eval_iters
 
-# Gradient accumulation — simule un batch effectif plus grand
-gradient_accumulation_steps = 1   # augmenter si OOM (ex: 4 → batch effectif ×4)
+# Gradient accumulation — simule un batch effectif plus grand (--grad_accum, ex. 4 si OOM avec un
+# batch réduit) ; en reprise, celle du run
+gradient_accumulation_steps = args.grad_accum or (_saved.get("grad_accum") if _saved else None) or 1
 
 # Détection de l'appareil (Ajout du support Mac MPS)
 if torch.cuda.is_available():
@@ -142,7 +186,33 @@ elif torch.backends.mps.is_available():
 else:
     device = "cpu"
 
-print(f"🚀 Device détecté : {device.upper()}")
+# ── Précision ─────────────────────────────────────────────────────────────────
+# auto : bfloat16 sur GPU CUDA récent (float16 + GradScaler sinon), float32 ailleurs.
+# Sur Mac (MPS) et CPU, bfloat16 est possible mais pas toujours plus rapide : à mesurer
+# avec popixa bench --dtype bfloat16 avant de l'adopter.
+dtype = args.dtype
+if dtype == "auto":
+    if device == "cuda":
+        dtype = "bfloat16" if torch.cuda.is_bf16_supported() else "float16"
+    else:
+        dtype = "float32"
+if dtype == "float16" and device != "cuda":
+    print("❌ --dtype float16 n'est géré que sur GPU CUDA (GradScaler) — utilise bfloat16 ou float32")
+    sys.exit(1)
+_ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
+autocast = (contextlib.nullcontext() if dtype == "float32"
+            else torch.autocast(device_type=device, dtype=_ptdtype))
+try:
+    with autocast:
+        torch.ones(2, 2, device=device) @ torch.ones(2, 2, device=device)
+except Exception as e:   # précision non gérée par cet appareil / cette version de PyTorch
+    print(f"❌ --dtype {dtype} indisponible sur {device} : {e}")
+    sys.exit(1)
+_GradScaler = getattr(torch.amp, "GradScaler", None)
+scaler = (_GradScaler("cuda", enabled=(dtype == "float16")) if _GradScaler is not None
+          else torch.cuda.amp.GradScaler(enabled=(dtype == "float16")))
+
+print(f"🚀 Device détecté : {device.upper()} · précision {dtype}")
 
 rope_base = 500_000 if args.longrope else 10_000
 
@@ -239,11 +309,11 @@ if args.data_dir:
         decode = lambda l: "".join([itos[i] for i in l])
         print("Tokenizer Caractère chargé.")
 
-    train_data = np.fromfile(os.path.join(args.data_dir, "train.bin"), dtype=np.uint16)
-    val_data   = np.fromfile(os.path.join(args.data_dir, "val.bin"),   dtype=np.uint16)
-    train_data = torch.from_numpy(train_data.astype(np.int64))
-    val_data   = torch.from_numpy(val_data.astype(np.int64))
-    print(f"Données binaires chargées depuis {args.data_dir}/")
+    # memmap : les fichiers restent sur disque, seuls les morceaux tirés sont lus →
+    # un corpus de plusieurs Go s'entraîne sans le charger en RAM
+    train_data = np.memmap(os.path.join(args.data_dir, "train.bin"), dtype=np.uint16, mode="r")
+    val_data   = np.memmap(os.path.join(args.data_dir, "val.bin"),   dtype=np.uint16, mode="r")
+    print(f"Données binaires ouvertes (memmap) depuis {args.data_dir}/")
 
 else:
     # Mode texte brut (input.txt) — tokenisation caractère
@@ -259,7 +329,7 @@ else:
     itos       = {i: c for i, c in enumerate(chars)}
     encode     = lambda s: [stoi[c] for c in s]
     decode     = lambda l: "".join([itos[i] for i in l])
-    data       = torch.tensor([stoi[c] for c in text], dtype=torch.long)
+    data       = np.array([stoi[c] for c in text], dtype=np.int64)
     n          = int(0.9 * len(data))
     train_data = data[:n]
     val_data   = data[n:]
@@ -276,16 +346,21 @@ for _name, _d in (("train", train_data), ("val", val_data)):
         sys.exit(1)
 
 
-# Générateur dédié au tirage des batchs : indépendant des autres usages de l'aléatoire
-# (dropout, init) → mêmes batchs pour une même graine. Reprise : graine + iter de départ.
+# Générateurs dédiés : batchs d'entraînement (reprise : graine + iter de départ) et batchs
+# d'évaluation, re-tirés À L'IDENTIQUE à chaque évaluation → les val loss successives sont
+# comparables entre elles (best.pt, arrêt anticipé) au lieu de dépendre du tirage
 _batch_gen = torch.Generator().manual_seed(args.seed)
+_eval_gen  = torch.Generator()
 
 
-def get_batch(split):
+def get_batch(split, gen=None):
     d  = train_data if split == "train" else val_data
-    ix = torch.randint(len(d) - block_size, (batch_size,), generator=_batch_gen)
-    x  = torch.stack([d[i     : i + block_size    ] for i in ix])
-    y  = torch.stack([d[i + 1 : i + block_size + 1] for i in ix])
+    ix = torch.randint(len(d) - block_size, (batch_size,), generator=gen or _batch_gen).tolist()
+    x  = torch.from_numpy(np.stack([d[i     : i + block_size    ].astype(np.int64) for i in ix]))
+    y  = torch.from_numpy(np.stack([d[i + 1 : i + block_size + 1].astype(np.int64) for i in ix]))
+    if device == "cuda":
+        return (x.pin_memory().to(device, non_blocking=True),
+                y.pin_memory().to(device, non_blocking=True))
     return x.to(device), y.to(device)
 
 
@@ -294,12 +369,14 @@ def estimate_loss(model):
     model.train(False)
     out = {}
     for split in ["train", "val"]:
+        _eval_gen.manual_seed(args.seed + 1)          # mêmes batchs à chaque évaluation
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            X, Y = get_batch(split)
-            _, loss = model(X, Y)
+            X, Y = get_batch(split, _eval_gen)
+            with autocast:
+                _, loss = model(X, Y)
             losses[k] = loss.item()
-        out[split] = losses.mean()
+        out[split] = float(losses.mean())
     model.train(True)
     return out
 
@@ -321,8 +398,15 @@ config = POPIXAConfig(
     rope_base=rope_base,
 )
 
-model     = nanoPOPIXA(config).to(device)
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+model = nanoPOPIXA(config).to(device)
+
+# Weight decay sur les matrices (Linear, embedding partagé avec lm_head) uniquement :
+# appliqué aux poids des RMSNorm, il les tire vers 0 et dégrade la normalisation
+_decay    = [p for p in model.parameters() if p.dim() >= 2]
+_no_decay = [p for p in model.parameters() if p.dim() < 2]
+optimizer = torch.optim.AdamW([{"params": _decay, "weight_decay": weight_decay},
+                               {"params": _no_decay, "weight_decay": 0.0}],
+                              lr=learning_rate, betas=betas)
 
 os.makedirs(out_dir, exist_ok=True)
 
@@ -337,119 +421,217 @@ if resume_ckpt is not None:
         sys.exit(1)
     model.load_state_dict(resume_ckpt["model"])
     if "optimizer" in resume_ckpt:
-        optimizer.load_state_dict(resume_ckpt["optimizer"])
+        try:
+            optimizer.load_state_dict(resume_ckpt["optimizer"])
+        except ValueError:
+            # Checkpoint < 2.3 : un seul groupe de paramètres (weight decay partout)
+            print("⚠️  État de l'optimiseur d'une version précédente : moments AdamW réinitialisés")
     iter_start = resume_ckpt.get("iter", 0)
+    best_val   = resume_ckpt.get("best_val", float("inf"))
+    best_iter  = resume_ckpt.get("best_iter")
+    bad_evals  = resume_ckpt.get("bad_evals", 0) if args.patience is None else 0
     _batch_gen.manual_seed(args.seed + iter_start)
-    if iter_start >= max_iters:
+    if resume_ckpt.get("stopped_early") and args.patience is None:
+        print(f"✅ Entraînement arrêté plus tôt (iter {iter_start}, meilleure val loss à l'iter "
+              f"{best_iter}) — rien à faire ; --patience N (ou 0) pour continuer")
+        iter_start = max_iters
+    elif iter_start >= max_iters:
         print(f"✅ Entraînement déjà terminé ({iter_start}/{max_iters} itérations) — rien à faire")
     else:
         print(f"✅ Reprise depuis iter {iter_start}")
     del resume_ckpt
-elif os.path.exists(ckpt_path):
+else:
+    best_val, best_iter, bad_evals = float("inf"), None, 0
     # Nouvel entraînement : on ne détruit jamais silencieusement un modèle existant
     import shutil
-    backup = os.path.join(out_dir, "checkpoint.prev.pt")
-    shutil.copy2(ckpt_path, backup)
-    print(f"💾 Checkpoint existant sauvegardé → {backup}  (--resume pour reprendre au lieu de repartir de 0)")
+    for _name in ("checkpoint", "best"):
+        _old = os.path.join(out_dir, f"{_name}.pt")
+        if os.path.exists(_old):
+            backup = os.path.join(out_dir, f"{_name}.prev.pt")
+            shutil.move(_old, backup) if _name == "best" else shutil.copy2(_old, backup)
+            print(f"💾 {_name}.pt existant sauvegardé → {backup}"
+                  + ("  (--resume pour reprendre au lieu de repartir de 0)" if _name == "checkpoint" else ""))
 
 
-def save_checkpoint(it: int) -> None:
-    """Sauvegarde modèle + optimizer (pour --resume). it = itérations effectuées."""
-    checkpoint = {
+def _payload(it: int) -> dict:
+    """Contenu commun à checkpoint.pt et best.pt (format 2 : types simples, chargement sûr)."""
+    payload = {
         "model":     model.state_dict(),
-        "optimizer": optimizer.state_dict(),
         "config":    config,
         "iter":      it,
         "tokenizer": meta.get("tokenizer", "char"),
         "data_dir":  args.data_dir,
+        "best_val":  best_val,
+        "best_iter": best_iter,
         # Réglages d'entraînement : --resume sans options les reprend tels quels
         "train":     {"size": size, "batch_size": batch_size, "max_iters": max_iters,
-                      "learning_rate": learning_rate, "warmup_iters": warmup_iters},
+                      "learning_rate": learning_rate, "warmup_iters": warmup_iters,
+                      "patience": patience, "dtype": dtype, "grad_accum": gradient_accumulation_steps},
     }
     if meta.get("tokenizer") != "tiktoken_gpt2":
-        checkpoint["vocab"] = {"stoi": stoi, "itos": itos}
-    # Écriture atomique : un Ctrl+C pendant la sauvegarde ne corrompt pas le checkpoint
-    tmp_path = ckpt_path + ".tmp"
-    torch.save(checkpoint, tmp_path)
-    os.replace(tmp_path, ckpt_path)
+        payload["vocab"] = {"stoi": stoi, "itos": itos}
+    return payload
+
+
+def save_checkpoint(it: int, stopped_early: bool = False) -> None:
+    """checkpoint.pt : modèle + optimizer (pour --resume). it = itérations effectuées."""
+    payload = _payload(it)
+    payload.update(optimizer=optimizer.state_dict(), bad_evals=bad_evals, stopped_early=stopped_early)
+    _write_checkpoint(ckpt_path, payload)
+
+
+def save_best(it: int, val: float) -> None:
+    """best.pt : poids à la meilleure val loss (sans optimizer : plus léger, pour chat / eval)."""
+    payload = _payload(it)
+    payload["val_loss"] = val
+    _write_checkpoint(best_path, payload)
+
+
+def write_run_json(**results) -> None:
+    """run.json : réglages et résultats de l'expérience (comparés par popixa runs)."""
+    info = {
+        "version": _popixa_version(), "out_dir": out_dir, "size": size, "device": device, "dtype": dtype,
+        "seed": args.seed, "data_dir": args.data_dir, "input": None if args.data_dir else args.input,
+        "tokenizer": meta.get("tokenizer", "char"), "vocab_size": vocab_size,
+        "params": model.get_num_params(False), "block_size": block_size, "n_layer": n_layer,
+        "n_head": n_head, "n_embd": n_embd, "batch_size": batch_size, "max_iters": max_iters,
+        "learning_rate": learning_rate, "warmup_iters": warmup_iters, "weight_decay": weight_decay,
+        "dropout": dropout, "attn_dropout": getattr(config, "attn_dropout", 0.0), "patience": patience,
+        "grad_accum": gradient_accumulation_steps,
+    }
+    info.update(results)
+    tmp = run_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp, run_path)
+
+
+def _popixa_version() -> str:
+    try:
+        from popixa_cli import popixa_version
+        return popixa_version()
+    except Exception:
+        return "dev"
 
 
 # ─────────────────────────────────────────
 # Boucle d'entraînement
 # ─────────────────────────────────────────
 
-print(f"\n🚀 Démarrage entraînement nanoPOPIXA [{size}]...\n")
+print(f"\n🚀 Démarrage entraînement nanoPOPIXA [{size}] → {out_dir}/\n")
 t0     = time.time()
 t_last = t0
 
 # Log propre à chaque run ; en reprise on AJOUTE un en-tête (le monitor garde le dernier :
 # max_iters / batch peuvent avoir changé)
-with open("train.log", "a" if resume_ckpt_loaded else "w", encoding="utf-8") as f:
-    f.write(f"# max_iters={max_iters} eval_interval={eval_interval}"
-            f" batch_size={batch_size} block_size={block_size}\n")
+if iter_start < max_iters:
+    with open(log_path, "a" if resume_ckpt_loaded else "w", encoding="utf-8") as f:
+        f.write(f"# max_iters={max_iters} eval_interval={eval_interval}"
+                f" batch_size={batch_size * gradient_accumulation_steps} block_size={block_size}\n")
+    write_run_json(status="en cours")
 
-for iter in range(iter_start, max_iters):
+
+def log_eval(it: int, losses: dict, lr: float, dt: float, pct: float) -> None:
+    log_line = (f"iter {it:5d} | train {losses['train']:.4f} | val {losses['val']:.4f} | "
+                f"lr {lr:.2e} | {dt:.1f}s")
+    filled = int(30 * pct)
+    print(f"[{'█' * filled + '░' * (30 - filled)}] {pct:5.1%}  {log_line}"
+          + ("  ★ best.pt" if best_iter == it else ""))
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(log_line + "\n")
+
+
+def track_best(it: int, val: float) -> bool:
+    """Met à jour best.pt ; retourne True si l'arrêt anticipé doit se déclencher."""
+    global best_val, best_iter, bad_evals
+    if val < best_val:
+        best_val, best_iter, bad_evals = val, it, 0
+        save_best(it, val)
+        return False
+    bad_evals += 1
+    return patience > 0 and bad_evals >= patience
+
+
+stopped_early = False
+it = iter_start
+for it in range(iter_start, max_iters):
 
     # LR scheduling — cosine avec warmup
-    lr = get_lr(iter)
+    lr = get_lr(it)
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
-    # Évaluation périodique
-    if iter % eval_interval == 0:
-        losses  = estimate_loss(model)
-        now     = time.time()
-        dt      = now - t_last   # temps écoulé depuis la dernière éval
-        t_last  = now
-        log_line = (
-            f"iter {iter:5d} | "
-            f"train {losses['train']:.4f} | val {losses['val']:.4f} | "
-            f"lr {lr:.2e} | {dt:.1f}s"
-        )
-        # Barre de progression ASCII
-        pct    = iter / max_iters
-        filled = int(30 * pct)
-        bar    = "█" * filled + "░" * (30 - filled)
-        print(f"[{bar}] {pct:5.1%}  {log_line}")
-        with open("train.log", "a", encoding="utf-8") as f:
-            f.write(log_line + "\n")
-        
+    # Évaluation périodique (pas au tout premier pas d'une reprise : déjà évalué)
+    if it % eval_interval == 0 and not (resume_ckpt_loaded and it == iter_start):
+        losses = estimate_loss(model)
+        now, dt = time.time(), time.time() - t_last
+        t_last = now
+        stop = track_best(it, losses["val"])
+        log_eval(it, losses, lr, dt, it / max_iters)
         # Sauvegarde checkpoint (+ optimizer pour --resume) — inutile avant le 1er pas
-        if iter > iter_start:
-            save_checkpoint(iter)
+        if it > iter_start:
+            save_checkpoint(it, stopped_early=stop)
+        if stop:
+            stopped_early = True
+            print(f"\n⏹  Arrêt anticipé : {patience} évaluations sans amélioration de la val loss "
+                  f"(meilleure : {best_val:.4f} à l'iter {best_iter})")
+            break
 
     # ── Forward + backward avec gradient accumulation ─────────────────────────
     optimizer.zero_grad(set_to_none=True)
     for micro_step in range(gradient_accumulation_steps):
-        X, Y        = get_batch("train")
-        _, loss     = model(X, Y)
-        loss        = loss / gradient_accumulation_steps
-        loss.backward()
+        X, Y = get_batch("train")
+        with autocast:
+            _, loss = model(X, Y)
+        scaler.scale(loss / gradient_accumulation_steps).backward()
 
     if grad_clip > 0:
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    optimizer.step()
+    scaler.step(optimizer)
+    scaler.update()
 
 # Évaluation + sauvegarde finales — sinon les itérations après la dernière évaluation
 # seraient perdues (rien à faire si aucune itération n'a tourné : le checkpoint, et donc
 # les sessions de chat, restent valides)
-if iter_start < max_iters:
-    losses   = estimate_loss(model)
-    log_line = (f"iter {max_iters:5d} | train {losses['train']:.4f} | val {losses['val']:.4f} | "
-                f"lr {get_lr(max_iters):.2e} | {time.time() - t_last:.1f}s")
-    print(f"[{'█' * 30}] 100.0%  {log_line}")
-    with open("train.log", "a", encoding="utf-8") as f:
-        f.write(log_line + "\n")
+if iter_start < max_iters and not stopped_early:
+    losses = estimate_loss(model)
+    track_best(max_iters, losses["val"])
+    log_eval(max_iters, losses, get_lr(max_iters), time.time() - t_last, 1.0)
     save_checkpoint(max_iters)
-print(f"\n✅ Entraînement terminé en {time.time() - t0:.1f}s — checkpoint : {ckpt_path}")
+if iter_start < max_iters:
+    duration = time.time() - t0
+    write_run_json(status="arrêt anticipé" if stopped_early else "terminé",
+                   last_iter=it if stopped_early else max_iters, best_iter=best_iter,
+                   best_val=round(best_val, 6), duration_s=round(duration, 1))
+    print(f"\n✅ Entraînement terminé en {duration:.1f}s — checkpoint : {ckpt_path} · "
+          f"meilleur (val {best_val:.4f}, iter {best_iter}) : {best_path}")
+
+    # ── Évaluation de fin d'expérience (popixa eval) ─────────────────────────────
+    if args.eval:
+        from popixa_eval import run_eval
+        tasks = ("bpb", "paires", "samples") if args.data_dir else ("paires", "samples")
+        print(f"\n📏 popixa eval sur {best_path} ({', '.join(tasks)})…")
+        try:
+            results, md = run_eval(best_path, data_dir=args.data_dir, tasks=tasks, device=device,
+                                   log=lambda m: print(m))
+            with open(os.path.join(out_dir, "eval.json"), "w", encoding="utf-8") as f:
+                f.write(json.dumps(results, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            with open(os.path.join(out_dir, "samples.md"), "w", encoding="utf-8") as f:
+                f.write(md)
+            print(f"   → {out_dir}/eval.json · {out_dir}/samples.md")
+        except (ValueError, OSError) as e:
+            print(f"⚠️  popixa eval impossible : {e}")
 
 
 # ─────────────────────────────────────────
 # Génération rapide post-entraînement
 # ─────────────────────────────────────────
 
-print("\n📝 Exemple de génération :\n")
-model.train(False)
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-output  = decode(model.generate(context, max_new_tokens=500, temperature=0.8, top_k=40, top_p=0.9)[0].tolist())
-print(output)
+if iter_start < max_iters:
+    print("\n📝 Exemple de génération :\n")
+    model.train(False)
+    context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    output  = decode(model.generate(context, max_new_tokens=500, temperature=0.8, top_k=40,
+                                    top_p=0.9)[0].tolist())
+    print(output)

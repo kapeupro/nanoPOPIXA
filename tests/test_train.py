@@ -1,10 +1,12 @@
 """Test de bout en bout de train.py : entraînement court, sauvegarde finale, reprise, chat."""
 
+import json
 import os
 import random
 import subprocess
 import sys
 
+import pytest
 import torch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,7 +69,8 @@ def test_resume_rewrites_log_header(tmp_path):
     (tmp_path / "input.txt").write_text("abcdefgh " * 900, encoding="utf-8")
     assert _train(tmp_path, "--max_iters", "2").returncode == 0
     assert _train(tmp_path, "--max_iters", "4", "--resume").returncode == 0
-    headers = [l for l in (tmp_path / "train.log").read_text().splitlines() if l.startswith("#")]
+    log = tmp_path / "out-nanopopixa" / "train.log"                    # le log vit dans le run
+    headers = [l for l in log.read_text().splitlines() if l.startswith("#")]
     assert headers[-1].startswith("# max_iters=4")
 
 
@@ -105,4 +108,126 @@ def test_resume_without_size_keeps_checkpoint_size(tmp_path):
 def test_seed_out_of_numpy_range_is_accepted(tmp_path):
     (tmp_path / "input.txt").write_text("abcdefgh " * 900, encoding="utf-8")
     r = _train(tmp_path, "--max_iters", "1", "--seed", str(2 ** 33))
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ─── 2.3 « Socle » ───────────────────────────────────────────────────────────
+
+def _words(n=3000, seed=0):
+    random.seed(seed)
+    w = "le chat dort sur le canapé pendant que la pluie tombe".split()
+    return " ".join(random.choice(w) for _ in range(n))
+
+
+def test_run_dir_best_checkpoint_safe_format_and_eval(tmp_path):
+    """--run : tout dans runs/NOM ; best.pt et checkpoint.pt au format 2 (chargement sûr)."""
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    r = _train(tmp_path, "--max_iters", "4", "--eval_interval", "2", "--run", "essai", "--eval")
+    assert r.returncode == 0, r.stdout + r.stderr
+    run = tmp_path / "runs" / "essai"
+    assert {"checkpoint.pt", "best.pt", "train.log", "run.json", "eval.json", "samples.md"} <= \
+        {p.name for p in run.iterdir()}
+    for name in ("checkpoint.pt", "best.pt"):
+        ck = torch.load(str(run / name), map_location="cpu", weights_only=True)   # aucun objet picklé
+        assert ck["format"] == 2 and isinstance(ck["config"], dict)
+    best = torch.load(str(run / "best.pt"), weights_only=True)
+    assert "optimizer" not in best and best["iter"] == best["best_iter"]
+    info = json.loads((run / "run.json").read_text(encoding="utf-8"))
+    assert info["status"] == "terminé" and info["best_val"] == pytest.approx(best["val_loss"], abs=1e-5)
+    assert set(json.loads((run / "eval.json").read_text(encoding="utf-8"))["tasks"]) == {"paires", "samples"}
+    assert not (tmp_path / "out-nanopopixa").exists() and not (tmp_path / "train.log").exists()
+    # Le chat charge best.pt (format 2)
+    sys.path.insert(0, ROOT)
+    import chat
+    model, encode, decode, _ = chat.load_model(str(run / "best.pt"), "cpu")
+    assert len(decode(model.generate(torch.tensor([encode("le")]), 5)[0].tolist())) >= 2
+
+
+def test_weight_decay_only_on_matrices(tmp_path):
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "1").returncode == 0
+    ck = torch.load(str(tmp_path / "out-nanopopixa" / "checkpoint.pt"), weights_only=True)
+    groups = ck["optimizer"]["param_groups"]
+    assert [g["weight_decay"] for g in groups] == [0.1, 0.0]
+    shapes = {k: v.dim() for k, v in ck["model"].items() if "rotary" not in k}   # sans les tampons RoPE
+    n_1d = sum(1 for k, d in shapes.items() if d < 2)
+    assert len(groups[1]["params"]) == n_1d and n_1d > 0                 # poids des RMSNorm
+    assert all(d >= 2 for k, d in shapes.items() if "norm" not in k and "ln_" not in k)
+
+
+def test_early_stopping_and_resume(tmp_path):
+    """La val loss se dégrade (val ≠ train) → arrêt anticipé ; --resume ne repart pas."""
+    text = "ab" * 9000 + "xy" * 1100                  # les 10 % de validation : un autre motif
+    (tmp_path / "input.txt").write_text(text, encoding="utf-8")
+    r = _train(tmp_path, "--max_iters", "400", "--eval_interval", "5", "--patience", "2",
+               "--eval_iters", "2", size="nano")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Arrêt anticipé" in r.stdout
+    info = json.loads((tmp_path / "out-nanopopixa" / "run.json").read_text(encoding="utf-8"))
+    assert info["status"] == "arrêt anticipé" and info["last_iter"] < 400
+    r = _train(tmp_path, "--resume", size=None)
+    assert r.returncode == 0 and "arrêté plus tôt" in r.stdout, r.stdout + r.stderr
+
+
+def test_legacy_checkpoint_resumes(tmp_path):
+    """Checkpoint 2.2 (config picklée, optimiseur à un seul groupe) : reprise possible."""
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    assert _train(tmp_path, "--max_iters", "2").returncode == 0
+    path = tmp_path / "out-nanopopixa" / "checkpoint.pt"
+    ck = torch.load(str(path), weights_only=True)
+    sys.path.insert(0, ROOT)
+    from model import POPIXAConfig, nanoPOPIXA
+    cfg = POPIXAConfig(**ck["config"])
+    m = nanoPOPIXA(cfg)
+    m.load_state_dict(ck["model"])
+    legacy = {"model": ck["model"], "config": cfg, "iter": 2, "tokenizer": "char", "vocab": ck["vocab"],
+              "optimizer": torch.optim.AdamW(m.parameters()).state_dict(), "data_dir": None}
+    torch.save(legacy, str(path))
+    r = _train(tmp_path, "--max_iters", "3", "--resume")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "moments AdamW réinitialisés" in r.stdout
+    assert torch.load(str(path), weights_only=True)["format"] == 2      # réécrit au format 2
+
+
+def test_memmap_keeps_ram_low(tmp_path):
+    """Un gros train.bin n'est pas chargé en RAM (memmap) : pic mémoire quasi identique."""
+    import pickle
+    import numpy as np
+    stoi = {c: i for i, c in enumerate("abcdefgh ")}
+
+    def prep(name, n_tokens):
+        d = tmp_path / name
+        d.mkdir()
+        rng = np.random.default_rng(0)
+        rng.integers(0, len(stoi), n_tokens, dtype=np.uint16).tofile(str(d / "train.bin"))
+        rng.integers(0, len(stoi), 5_000, dtype=np.uint16).tofile(str(d / "val.bin"))
+        with open(d / "meta.pkl", "wb") as f:
+            pickle.dump({"vocab_size": len(stoi), "tokenizer": "char", "stoi": stoi,
+                         "itos": {i: c for c, i in stoi.items()}}, f)
+        return str(d)
+
+    def peak_kb(data_dir):
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import runpy, sys, resource; sys.argv = sys.argv[1:]; "
+             "runpy.run_path(sys.argv[0], run_name='__main__'); "
+             "print('MAXRSS', resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)",
+             os.path.join(ROOT, "train.py"), "--size", "nano", "--batch_size", "2", "--max_iters", "1",
+             "--data_dir", data_dir, "--out_dir", str(tmp_path / ("o" + os.path.basename(data_dir)))],
+            cwd=str(tmp_path), env=ENV, capture_output=True, text=True, timeout=600)
+        assert r.returncode == 0, r.stdout + r.stderr
+        return int(r.stdout.split("MAXRSS")[-1].split()[0])
+
+    small, big = prep("petit", 20_000), prep("gros", 60_000_000)        # 120 Mo sur disque
+    # Sans memmap : + 120 Mo (uint16) + 480 Mo (copie int64) ; avec : quelques pages lues
+    assert peak_kb(big) - peak_kb(small) < 60_000, "train.bin chargé en mémoire ?"
+
+
+def test_train_rejects_bad_options(tmp_path):
+    (tmp_path / "input.txt").write_text(_words(), encoding="utf-8")
+    r = _train(tmp_path, "--max_iters", "1", "--run", "../evasion")
+    assert r.returncode == 2 and "simple nom" in r.stderr
+    r = _train(tmp_path, "--max_iters", "1", "--dtype", "float16")                 # CPU
+    assert r.returncode == 1 and "float16" in r.stdout
+    r = _train(tmp_path, "--max_iters", "1", "--dtype", "bfloat16")                # autocast CPU
     assert r.returncode == 0, r.stdout + r.stderr

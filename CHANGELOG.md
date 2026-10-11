@@ -2,6 +2,38 @@
 
 Toutes les versions notables de nanoPOPIXA. Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [2.3.0] — « Socle »
+
+Un entraînement sérieux avant d'attaquer un vrai corpus français : plus rapide, plus sobre en
+mémoire, reproductible et sûr. Chaque changement est mesuré avec `popixa bench` / `popixa eval`
+(voir `evals/BASELINES.md`).
+
+### Ajouté
+- **Expériences nommées** : `popixa train --run NOM` écrit tout dans `runs/NOM/` (`checkpoint.pt`,
+  `best.pt`, `train.log`, `run.json`) ; `--eval` lance `popixa eval` sur `best.pt` en fin
+  d'entraînement ; `popixa runs` compare les expériences ; `popixa monitor --run NOM`.
+- **`best.pt`** (poids à la meilleure val loss) et **arrêt anticipé** `--patience N`.
+- **Précision mixte** `--dtype auto|float32|bfloat16|float16` (auto : bfloat16 sur GPU CUDA) ;
+  `popixa bench --dtype` pour mesurer avant d'adopter une précision réduite.
+- `--grad_accum N`, `--eval_interval`, `--eval_iters`.
+- **`checkpoint.py`** : format de checkpoint 2, chargé avec `weights_only=True`.
+
+### Modifié
+- **Dropout d'attention supprimé** (`attn_dropout = 0`, le dropout résiduel reste à 0.1) : sur
+  CPU / Mac, un dropout dans `scaled_dot_product_attention` forçait l'implémentation lente.
+- **Données en memmap** : `train.bin` n'est plus chargé en RAM.
+- **Weight decay 0.1 sur les seules matrices** (il s'appliquait aussi aux poids des RMSNorm),
+  betas AdamW (0.9, 0.95).
+- **Validation sur des batchs fixes** : les val loss successives sont comparables entre elles.
+- `train.log` est écrit dans le dossier de l'expérience (`out-nanopopixa/train.log` par défaut).
+- **`model.py` découpé** : l'architecture reste dans `model.py`, toute la génération passe dans
+  `generation.py` (API inchangée : `model.generate_stream(...)` etc.).
+
+### Sécurité
+- Les checkpoints sont chargés en mode sûr : un fichier piégé est refusé au lieu d'exécuter du
+  code. Les checkpoints 2.0 – 2.2 restent lisibles (seule la classe `POPIXAConfig` est autorisée
+  en plus des types simples) et sont réécrits au format 2 à la reprise.
+
 ## [2.2.0] — « Mètre-étalon »
 
 On mesure avant de changer : chaque version suivante devra prouver, chiffres à l'appui,

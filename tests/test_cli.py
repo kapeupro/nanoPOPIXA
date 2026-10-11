@@ -50,9 +50,10 @@ def test_shell_survives_errors(monkeypatch, capsys, tmp_path):
                   "help", "exit"])
     monkeypatch.setattr(builtins, "input", lambda *_: next(lines))
     popixa_cli.run_shell()
-    out = ANSI.sub("", capsys.readouterr().out)
+    cap = capsys.readouterr()
+    out = ANSI.sub("", cap.out + cap.err)
     assert "À bientôt" in out
-    assert "gen : UnpicklingError" in out
+    assert "illisible" in out and "Traceback" not in out        # chargement sûr : message clair
     assert "Guillemet non fermé" not in out
 
 
@@ -78,3 +79,22 @@ def test_monitor_shows_divergence_and_real_speed(tmp_path):
     assert monitor.parse_log(str(tmp_path))[0] == []  # un dossier n'est pas un log
     with pytest.raises(SystemExit):
         popixa_cli._build_parser().parse_args(["monitor", "--refresh", "0"])
+
+
+def test_runs_lists_experiments_and_monitor_finds_run_log(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    run = tmp_path / "runs" / "essai"
+    run.mkdir(parents=True)
+    (run / "run.json").write_text(json.dumps({"size": "nano", "max_iters": 1000, "best_val": 2.0123,
+                                              "status": "terminé"}), encoding="utf-8")
+    (run / "eval.json").write_text(json.dumps({"tasks": {"bpb": {"bpb": 2.9}, "paires": {"accuracy": 0.615}}}),
+                                   encoding="utf-8")
+    (tmp_path / "runs" / "cassé").mkdir()
+    (tmp_path / "runs" / "cassé" / "run.json").write_text("{pas du json", encoding="utf-8")
+    popixa_cli._run_command(["runs"])
+    out = ANSI.sub("", capsys.readouterr().out)
+    assert "runs/essai" in out and "2.0123" in out and "2.900" in out and "61.5%" in out
+    assert popixa_cli._default_log("essai") == os.path.join("runs", "essai", "train.log")
+    assert popixa_cli._default_log() == os.path.join("out-nanopopixa", "train.log")
+    (tmp_path / "train.log").write_text("", encoding="utf-8")         # log d'avant 2.3
+    assert popixa_cli._default_log() == "train.log"
