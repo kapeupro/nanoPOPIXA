@@ -64,12 +64,18 @@ EFFORT_PRESETS = {
 
 # ─── Chargement du modèle ────────────────────────────────────────────────────
 def load_model(checkpoint_path: str, device: str):
+    from checkpoint import load_checkpoint
     try:
-        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        # Chargement sûr (weights_only) : un checkpoint téléchargé ne peut pas exécuter de code
+        ckpt = load_checkpoint(checkpoint_path, map_location=device,
+                               log=lambda m: print(INFO_C + "  " + m + R))
     except FileNotFoundError:
         print(ERR_C + f"\n  ✗ Checkpoint introuvable : {checkpoint_path}" + R)
         print(INFO_C + "  Entraîne d'abord le modèle :\n"
               "    popixa prep && popixa train --data_dir data/" + R)
+        sys.exit(1)
+    except ValueError as e:
+        print(ERR_C + f"\n  ✗ {e}" + R)
         sys.exit(1)
 
     v1_error = checkpoint_v1_error(ckpt.get("model", {}))

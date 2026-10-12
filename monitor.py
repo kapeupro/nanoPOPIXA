@@ -398,12 +398,44 @@ def render_dashboard(entries: list[Entry], w: int = 72, log_path: str = "train.l
 
 
 # ─── Boucle principale ────────────────────────────────────────────────────────
-def run_monitor(log_path: str, refresh: float):
+STALE_LOG_S = 60     # log d'un run < 2.3 (sans verrou) immobile depuis plus longtemps : on le quitte
+
+
+def _follow(current: str, resolve) -> str:
+    """Log à afficher : le plus récent selon resolve(), mais on ne quitte pas le log d'un
+    entraînement qui tourne encore (sinon, avec deux entraînements en parallèle, on alternerait
+    de l'un à l'autre). « Tourne encore » = son dossier est verrouillé par train.py (runlock) —
+    même si le log ne bouge pas entre deux évaluations (≈ 30 min en small sur CPU) ; sans verrou
+    (run < 2.3, log hors d'un dossier de run) : log modifié depuis moins de STALE_LOG_S."""
+    try:
+        candidate = os.path.abspath(resolve())
+    except OSError:
+        return current
+    if candidate == current:
+        return current
+    import runlock
+    active = runlock.is_active(os.path.dirname(current))
+    if active is not None:
+        return current if active else candidate
+    if runlock.is_active(os.path.dirname(candidate)):
+        return candidate                         # suivi sans verrou (< 2.3), candidat en cours
+    try:
+        idle = time.time() - os.path.getmtime(current)
+    except OSError:
+        idle = float("inf")                      # log suivi disparu
+    return candidate if idle > STALE_LOG_S else current
+
+
+def run_monitor(log_path: str, refresh: float, resolve=None):
+    """resolve : fonction rappelée à chaque rafraîchissement pour choisir le log (sans --log ni
+    --run, on suit ainsi l'entraînement lancé APRÈS le monitor)."""
     abs_path = os.path.abspath(log_path)
     sys.stdout.write("\033[?25l")
     sys.stdout.flush()
     try:
         while True:
+            if resolve is not None:
+                abs_path = _follow(abs_path, resolve)
             entries, max_iters, eval_interval, batch_size, block_size = parse_log(abs_path)
             try:
                 cols = os.get_terminal_size().columns
@@ -441,10 +473,14 @@ def positive_float(value: str) -> float:
 
 def main():
     parser = argparse.ArgumentParser(description="Monitor d'entraînement nanoPOPIXA")
-    parser.add_argument("--log",     default="train.log")
+    parser.add_argument("--log",     default=None,
+                        help="Fichier de log (défaut : le train.log le plus récent, voir popixa monitor)")
+    parser.add_argument("--run",     default=None, help="Expérience : runs/NOM/train.log")
     parser.add_argument("--refresh", type=positive_float, default=1.0)
     args = parser.parse_args()
-    run_monitor(args.log, args.refresh)
+    from popixa_cli import _default_log
+    follow = None if (args.log or args.run) else _default_log
+    run_monitor(args.log or _default_log(args.run), args.refresh, resolve=follow)
 
 
 if __name__ == "__main__":

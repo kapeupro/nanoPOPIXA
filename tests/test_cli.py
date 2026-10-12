@@ -50,9 +50,10 @@ def test_shell_survives_errors(monkeypatch, capsys, tmp_path):
                   "help", "exit"])
     monkeypatch.setattr(builtins, "input", lambda *_: next(lines))
     popixa_cli.run_shell()
-    out = ANSI.sub("", capsys.readouterr().out)
+    cap = capsys.readouterr()
+    out = ANSI.sub("", cap.out + cap.err)
     assert "À bientôt" in out
-    assert "gen : UnpicklingError" in out
+    assert "illisible" in out and "Traceback" not in out        # chargement sûr : message clair
     assert "Guillemet non fermé" not in out
 
 
@@ -78,3 +79,131 @@ def test_monitor_shows_divergence_and_real_speed(tmp_path):
     assert monitor.parse_log(str(tmp_path))[0] == []  # un dossier n'est pas un log
     with pytest.raises(SystemExit):
         popixa_cli._build_parser().parse_args(["monitor", "--refresh", "0"])
+
+
+def test_runs_lists_experiments_and_monitor_finds_run_log(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    run = tmp_path / "runs" / "essai"
+    run.mkdir(parents=True)
+    (run / "run.json").write_text(json.dumps({"size": "nano", "max_iters": 1000, "best_val": 2.0123,
+                                              "status": "terminé"}), encoding="utf-8")
+    (run / "eval.json").write_text(json.dumps({"tasks": {"bpb": {"bpb": 2.9}, "paires": {"accuracy": 0.615}}}),
+                                   encoding="utf-8")
+    (tmp_path / "runs" / "cassé").mkdir()
+    (tmp_path / "runs" / "cassé" / "run.json").write_text("{pas du json", encoding="utf-8")
+    popixa_cli._run_command(["runs"])
+    out = ANSI.sub("", capsys.readouterr().out)
+    assert "runs/essai" in out and "2.0123" in out and "2.900" in out and "61.5%" in out
+    assert popixa_cli._default_log("essai") == os.path.join("runs", "essai", "train.log")
+    assert popixa_cli._default_log() == os.path.join("out-nanopopixa", "train.log")
+    (tmp_path / "train.log").write_text("", encoding="utf-8")         # log d'avant 2.3
+    assert popixa_cli._default_log() == "train.log"
+
+
+def test_train_relays_zero_valued_options(monkeypatch):
+    """--seed 0, --dropout 0, --patience 0… sont des valeurs, pas des options absentes (0 == False)."""
+    import runpy
+    seen = {}
+    monkeypatch.setattr(runpy, "run_path", lambda *a, **k: seen.setdefault("argv", list(sys.argv)))
+    monkeypatch.setattr(sys, "argv", ["popixa"])
+    popixa_cli._run_command(["train", "--seed", "0", "--dropout", "0", "--patience", "0",
+                             "--weight_decay", "0", "--attn_dropout", "0.0", "--eval"])
+    argv = seen["argv"]
+    for opt, val in (("--seed", "0"), ("--dropout", "0.0"), ("--patience", "0"),
+                     ("--weight_decay", "0.0"), ("--attn_dropout", "0.0")):
+        assert argv[argv.index(opt) + 1] == val, argv
+    assert "--eval" in argv and "--resume" not in argv and "--size" not in argv
+
+
+def test_default_log_follows_the_most_recent_training(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    old, new = tmp_path / "runs" / "a" / "train.log", tmp_path / "out-nanopopixa" / "train.log"
+    for p in (old, new):
+        p.parent.mkdir(parents=True)
+        p.write_text("", encoding="utf-8")
+    os.utime(old, (2_000_000_000, 2_000_000_000))
+    os.utime(new, (1_000_000_000, 1_000_000_000))
+    assert popixa_cli._default_log() == os.path.join("runs", "a", "train.log")
+    os.utime(new, (2_100_000_000, 2_100_000_000))                     # un nouvel entraînement démarre
+    assert popixa_cli._default_log() == os.path.join("out-nanopopixa", "train.log")
+
+
+def test_monitor_does_not_flip_between_active_runs(tmp_path):
+    a, b = tmp_path / "a.log", tmp_path / "b.log"
+    for p in (a, b):
+        p.write_text("", encoding="utf-8")
+    now = __import__("time").time()
+    os.utime(a, (now, now))                               # suivi et actif
+    assert monitor._follow(str(a), lambda: str(b)) == str(a)
+    os.utime(a, (now - 3600, now - 3600))                 # suivi immobile depuis 1 h → on bascule
+    assert monitor._follow(str(a), lambda: str(b)) == str(b)
+    a.unlink()                                            # suivi disparu → on bascule
+    assert monitor._follow(str(a), lambda: str(b)) == str(b)
+
+
+def test_monitor_stays_on_a_running_training_between_evaluations(tmp_path):
+    """Run en cours (dossier verrouillé par train.py) : on le garde même si son log n'a pas bougé
+    depuis longtemps (≈ 30 min entre deux évaluations en small sur CPU) ; verrou libéré → on bascule."""
+    import runlock
+    a, b = tmp_path / "a" / "train.log", tmp_path / "b" / "train.log"
+    for p in (a, b):
+        p.parent.mkdir()
+        p.write_text("", encoding="utf-8")
+    old = __import__("time").time() - 3600
+    os.utime(a, (old, old))
+    lock = runlock.acquire(str(a.parent))
+    try:
+        assert runlock.is_active(str(a.parent)) is True
+        assert monitor._follow(str(a), lambda: str(b)) == str(a)
+    finally:
+        lock.close()
+    assert runlock.is_active(str(a.parent)) is False
+    assert monitor._follow(str(a), lambda: str(b)) == str(b)
+    assert runlock.is_active(str(tmp_path)) is None                   # pas de verrou : run < 2.3
+
+
+def test_shell_train_releases_the_folder_lock(tmp_path):
+    """Shell popixa : train.py tourne DANS le processus (runpy) — son verrou est rendu à la fin de
+    la commande, sinon un `train --resume` suivant serait refusé (« tourne déjà »)."""
+    import random
+    random.seed(0)
+    words = "le chat dort sur le canapé pendant que la pluie tombe".split()
+    (tmp_path / "input.txt").write_text(" ".join(random.choice(words) for _ in range(2500)), encoding="utf-8")
+    code = ("import popixa_cli, runlock\n"
+            "base = ['train', '--size', 'nano', '--batch_size', '2', '--eval_iters', '1']\n"
+            "popixa_cli._run_command(base + ['--max_iters', '2'])\n"
+            "print('ACTIF', runlock.is_active('out-nanopopixa'))\n"
+            "popixa_cli._run_command(base + ['--max_iters', '3', '--resume'])\n")
+    r = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path), env=ENV, capture_output=True,
+                       text=True, timeout=600)
+    assert r.returncode == 0 and "ACTIF False" in r.stdout, r.stdout + r.stderr
+    assert "Reprise depuis iter 2" in r.stdout and "tourne déjà" not in r.stdout, r.stdout
+
+
+def test_default_log_prefers_a_running_training(tmp_path, monkeypatch):
+    """Un run terminé à l'instant ne masque pas l'entraînement en cours (verrou tenu) dont le log
+    n'a pas bougé depuis sa dernière évaluation."""
+    import runlock
+    monkeypatch.chdir(tmp_path)
+    done, running = tmp_path / "runs" / "fini" / "train.log", tmp_path / "runs" / "encours" / "train.log"
+    for p in (done, running):
+        p.parent.mkdir(parents=True)
+        p.write_text("", encoding="utf-8")
+    old = __import__("time").time() - 600
+    os.utime(running, (old, old))
+    assert popixa_cli._default_log() == os.path.join("runs", "fini", "train.log")
+    lock = runlock.acquire(str(running.parent))
+    try:
+        assert popixa_cli._default_log() == os.path.join("runs", "encours", "train.log")
+        assert monitor._follow(str(done), popixa_cli._default_log) == os.path.abspath(
+            os.path.join("runs", "encours", "train.log"))
+    finally:
+        runlock.release_all()
+    assert runlock.is_active(str(running.parent)) is False
+
+
+def test_lock_impossible_means_no_protection_not_a_crash(tmp_path):
+    """Dossier où .train.lock ne peut pas être créé (lecture seule, run < 2.3 archivé) : pas de
+    verrou plutôt qu'un plantage (False ≠ None, qui veut dire « un entraînement tourne déjà »)."""
+    import runlock
+    assert runlock.acquire(str(tmp_path / "absent")) is False

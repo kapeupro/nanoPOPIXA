@@ -19,26 +19,33 @@ Token Embedding (wte, weight-tied avec lm_head)
   `KVCache` (sous-classe de `list`) dont `token_ids` = ids exacts couverts par le cache
 - **Flash Attention** — `F.scaled_dot_product_attention` si PyTorch ≥ 2.0 ; prefill par morceaux
   sur un cache existant → masque causal **décalé** (`tril(diagonal=past_len)`)
+- **Dropout** — `dropout` (embeddings, résiduels, MLP) ; `attn_dropout = 0.0` par défaut DANS
+  l'attention : `dropout_p > 0` force le noyau SDPA « math » lent sur CPU/MPS (≈ 2,2× en entraînement)
 
 ## Fichiers clés
 
 | Fichier | Rôle |
 |---|---|
-| `model.py` | Architecture complète + génération (generate, generate_stream, thinking, speculative, structured) |
-| `train.py` | Boucle d'entraînement, LR scheduling cosine+warmup |
+| `model.py` | Architecture : `POPIXAConfig`, `SIZE_PRESETS`, couches, `nanoPOPIXA` (init, forward) ; ré-exporte `KVCache`, `_Decoder`… |
+| `generation.py` | Génération : `GenerationMixin` hérité par `nanoPOPIXA` (sampling, generate, generate_stream, thinking, speculative, structured), `KVCache`, `_Decoder` — n'importe pas `model` |
+| `train.py` | Boucle d'entraînement : cosine+warmup, memmap, autocast (`--dtype`), best.pt, `--patience`, `--run` |
+| `checkpoint.py` | Format de checkpoint 2 (types simples) : `save_checkpoint` atomique, `load_checkpoint` sûr (`weights_only=True`) |
+| `runlock.py` | Verrou d'un dossier d'expérience (`.train.lock`) : un train.py à la fois ; `is_active` pour le monitor |
 | `chat.py` | CLI interactif, effort levels, thinking blocks, KV-cache persistant |
 | `session_cache.py` | Sérialisation/restauration du KV-cache entre sessions (format v3 : ids exacts + historique) |
 | `structured.py` | Structured outputs : matcher JSON Schema octet par octet, masques de tokens, complétion la plus courte |
 | `popixa_eval.py` | `popixa eval` (bpb, paires minimales FR, échantillons → eval.json) + `popixa bench` |
 | `evals/` | `fr_paires.jsonl` (généré par `build_paires.py` depuis `paires/*.py`), `prompts_fr.txt`, `BASELINES.md` |
-| `tests/` | Suite pytest (modèle, session, chat, structured, eval) — lancée par la CI |
+| `tests/` | Suite pytest (modèle, session, chat, structured, eval, checkpoint, train) — lancée par la CI |
 | `data_prep.py` | Téléchargement + tokenisation (tiktoken BPE ou char-level) |
 | `popixa_cli.py` | Point d'entrée `popixa` avec shell interactif |
 
 ## Conventions de code
 
 - Pas de biais (`bias=False`) sur toutes les Linear dans v2
-- `POPIXAConfig` est un `@dataclass` — ajouter `rope_base: int = 10_000` si besoin
+- `POPIXAConfig` est un `@dataclass` — ajouter `rope_base: int = 10_000` si besoin ; picklé dans les
+  checkpoints sous `model.POPIXAConfig` (ne pas le déplacer) → nouveau champ à la FIN, avec défaut,
+  lu via `getattr(config, "champ", défaut)` (configs anciens sans l'attribut)
 - Presets d'architecture : `model.SIZE_PRESETS` (nano/small/medium), partagés par train.py et bench ;
   `popixa train` = `small` par défaut, `--seed` (défaut 1337) → poids identiques bit à bit sur CPU
 - `forward(idx, targets=None, past_kvs=None)` :
@@ -47,7 +54,7 @@ Token Embedding (wte, weight-tied avec lm_head)
 - Les checkpoints v1 (LayerNorm + wpe + GELU) sont incompatibles avec v2 → réentraîner
   (`checkpoint_v1_error(state_dict)` donne un message propre dans chat / gen / train --resume)
 - `generate_stream` accepte `initial_past_kvs` et `cache_ref` pour la persistance de session
-- Tous les générateurs passent par `_Decoder` (model.py) — invariants :
+- Tous les générateurs passent par `_Decoder` (generation.py) — invariants :
   - `dec.idx` = contexte connu (ids du cache initial s'ils sont connus + entrée + tokens générés)
   - `dec.past_kvs` couvre `dec.idx` sauf les `pending` derniers tokens
   - au-delà de `block_size` : prefill glissant sur les 75% derniers tokens (jamais de crash)
@@ -155,6 +162,53 @@ EFFORT_PRESETS = {
   max_iters, lr, warmup), sinon taille déduite de l'architecture (`_size_of`) ; garde MPS testée sur
   l'architecture effective
 
+## Implémenté — v2.3 « Socle »
+
+- **Checkpoints format 2** (`checkpoint.py`) : `{"format": 2, "model", "config": dict, "iter", "tokenizer",
+  "vocab"?, "optimizer"?, "train", "best_val", "best_iter", …}` — JAMAIS d'objet picklé ; charger avec
+  `load_checkpoint` (jamais `torch.load` direct) ; anciens checkpoints : seule `POPIXAConfig` autorisée
+- **train.py** :
+  - données `np.memmap` (uint16) → `get_batch` empile des tranches ; mode `input.txt` en numpy en RAM
+  - AdamW : 2 groupes (dim ≥ 2 → weight_decay 0.1 ; RMSNorm → 0), betas (0.9, 0.999) — 0.95 mesuré
+    moins bon (ablations dans evals/BASELINES.md) ; réglages experts `--lr --weight_decay --beta2
+    --dropout --attn_dropout` (`_hp` : option > réglage du run repris > défaut)
+  - `estimate_loss` : `_eval_gen` re-seedé (`seed + 1`) à chaque évaluation → mêmes batchs ; les batchs
+    d'entraînement ont leur propre générateur (`_batch_gen`, reprise : `seed + iter`)
+  - `best.pt` (sans optimizer) à chaque amélioration de la val loss ; `--patience N` → arrêt anticipé,
+    `stopped_early` dans checkpoint.pt (`--resume` ne repart pas sauf `--patience` explicite)
+  - `--dtype auto` : bfloat16 (sinon float16 + GradScaler) sur CUDA, float32 ailleurs ; autocast partagé
+    entraînement / éval
+  - `--run NOM` ≡ `--out_dir runs/NOM` ; `train.log` et `run.json` DANS le dossier ; `--eval` → eval.json
+  - réglages repris par `--resume` : `ckpt["train"]` (size, seed, eval_interval, eval_iters, batch,
+    max_iters, lr, warmup, patience, grad_accum, weight_decay, beta2, dropout, attn_dropout) — PAS le
+    dtype (propre à la machine : `--dtype auto` à chaque lancement) ; `--weight_decay` / `--beta2` à la
+    reprise sont réappliqués aux groupes de l'optimiseur (load_state_dict remet les anciens)
+  - best.pt jamais écrit à l'évaluation initiale ; écrit APRÈS checkpoint.pt ; à la reprise, vérifié
+    contre (best_iter, best_val) du checkpoint : restauré (écriture directe, sans engager) si le meilleur
+    point est le checkpoint, sinon réécrit à la prochaine évaluation s'il en reste une (sinon :
+    « impossible à reconstruire », best.pt absent)
+  - verrou par dossier (`runlock.py`, `DOSSIER/.train.lock`, flock / msvcrt) pris AVANT de toucher au
+    dossier et tenu jusqu'à la fin : 2e train.py dans le même dossier → refus, rien touché ; le shell
+    `popixa` (train.py via runpy, même processus) le rend avec `runlock.release_all()` ; `.train.lock`
+    illisible (autre utilisateur) → acquire → None, refus ; dossier non inscriptible (acquire → False ou
+    `os.access`) → `_need_write()` refuse dès qu'il faudrait écrire (« rien à faire » reste possible) ;
+    `_default_log` et
+    `monitor._follow` préfèrent un run dont le verrou est tenu (`runlock.is_active`)
+  - lancements transactionnels : un nouveau run dans un dossier occupé crée `prev.new/` + son marqueur
+    `.transaction`, y déplace les `RUN_FILES` du run précédent puis écrit `.complet` ; `prev.new/` et
+    `prev.old/` sans `.transaction` = dossiers de l'utilisateur → `_check_reserved` refuse (vides :
+    supprimés) ; nos dossiers sont supprimés marqueur EN DERNIER (`_rmtree_ours`) ; un échec entre la
+    mise de côté et la boucle (disque plein sur train.log…) est annulé tout de suite ;
+    checkpoint/run.json écrits via `.tmp` supprimé en cas d'échec ; APRÈS
+    l'écriture réussie de la 1re sauvegarde, `_commit_launch` : `prev/` → `prev.old/`, `prev.new/` →
+    `prev/` (engagement), puis suppression de `prev.old/` — `prev/` = UNE génération ; une mise de côté
+    sans modèle ne remplace pas un `prev/` qui en a un (jetée). Interruption / erreur avant →
+    `_recover_launch` (prev.old/ remis en prev/ si l'échange était à moitié fait, puis
+    `_rollback_launch` : suppression des fichiers du lancement avorté seulement si `.complet` existe,
+    remise en place) — aussi au lancement suivant si le processus a été tué ; run.json « interrompu » /
+    « erreur » sinon
+- **CLI** : `popixa runs`, `popixa monitor --run`, `popixa bench --dtype`
+
 ## Ce qui reste à implémenter (backlog)
 
 1. **Structured outputs + thinking** — phase de réflexion libre puis réponse JSON contrainte
@@ -165,7 +219,7 @@ EFFORT_PRESETS = {
 ## Tests rapides
 
 ```bash
-# Suite complète (≈ 30 s sur CPU)
+# Suite complète (≈ 8 min sur CPU 4 cœurs)
 python -m pytest -q tests
 
 # Vérifier le modèle

@@ -2,6 +2,54 @@
 
 Toutes les versions notables de nanoPOPIXA. Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [2.3.0] — « Socle »
+
+Un entraînement sérieux avant d'attaquer un vrai corpus français : plus rapide, plus sobre en
+mémoire, reproductible et sûr. Chaque changement est mesuré avec `popixa bench` / `popixa eval`
+(voir `evals/BASELINES.md`).
+
+### Ajouté
+- **Expériences nommées** : `popixa train --run NOM` écrit tout dans `runs/NOM/` (`checkpoint.pt`,
+  `best.pt`, `train.log`, `run.json`) ; `--eval` lance `popixa eval` sur `best.pt` en fin
+  d'entraînement ; `popixa runs` compare les expériences ; `popixa monitor --run NOM`.
+- **`best.pt`** (poids à la meilleure val loss) et **arrêt anticipé** `--patience N`.
+- **Précision mixte** `--dtype auto|float32|bfloat16|float16` (auto : bfloat16 sur GPU CUDA) ;
+  `popixa bench --dtype` pour mesurer avant d'adopter une précision réduite.
+- `--grad_accum N`, `--eval_interval`, `--eval_iters` ; réglages experts `--lr`, `--weight_decay`,
+  `--beta2`, `--dropout`, `--attn_dropout` (ablations, repris par `--resume`).
+- **`checkpoint.py`** : format de checkpoint 2, chargé avec `weights_only=True`.
+
+### Modifié
+- **Dropout d'attention supprimé** (`attn_dropout = 0`, le dropout résiduel reste à 0.1) : sur
+  CPU / Mac, un dropout dans `scaled_dot_product_attention` forçait l'implémentation lente.
+- **Données en memmap** : `train.bin` n'est plus chargé en RAM.
+- **Weight decay 0.1 sur les seules matrices** (il s'appliquait aussi aux poids des RMSNorm).
+  betas AdamW inchangés (0.9, 0.999) : 0.95, essayé, coûtait ≈ 0.08 bit par octet (mesuré).
+- **Validation sur des batchs fixes** : les val loss successives sont comparables entre elles.
+- `train.log` est écrit dans le dossier de l'expérience (`out-nanopopixa/train.log` par défaut) ;
+  `popixa monitor` suit par défaut le `train.log` le plus récent.
+- Nouvel entraînement dans un dossier déjà utilisé : l'ancien run passe dans `prev/` (au lieu de
+  `checkpoint.prev.pt`) une fois la première sauvegarde écrite ; arrêté avant (même tué brutalement,
+  ou sauvegarde impossible), l'ancien run est remis en place. `prev/` garde le run précédent seulement ;
+  un run sans modèle (ni checkpoint.pt ni best.pt) ne remplace pas un `prev/` qui en a un (il est
+  supprimé). `prev.new/` et `prev.old/` sont réservés : un dossier de l'utilisateur à ce nom n'est jamais touché.
+- Un seul entraînement à la fois par dossier (verrou, rendu à la fin de la commande dans le shell
+  `popixa`) ; `popixa monitor` suit l'entraînement en cours, même quand son log ne bouge pas entre
+  deux évaluations.
+- `--resume` reprend aussi la graine et les batchs d'évaluation du run (val loss comparables),
+  et applique à l'optimiseur les `--weight_decay` / `--beta2` demandés.
+- `popixa train` transmet enfin les options valant 0 (`--seed 0`, `--dropout 0`, `--patience 0`…).
+- `--dtype auto` choisit float16 + GradScaler sur les GPU antérieurs à Ampere (bfloat16 y est émulé).
+- **`model.py` découpé** : l'architecture reste dans `model.py`, toute la génération passe dans
+  `generation.py` (API inchangée : `model.generate_stream(...)` etc.).
+
+### Sécurité
+- Les checkpoints sont chargés en mode sûr : un fichier piégé est refusé au lieu d'exécuter du
+  code. Les checkpoints 2.0 – 2.2 restent lisibles (seule la classe `POPIXAConfig` est autorisée
+  en plus des types simples) et sont réécrits au format 2 à la reprise. Avec PyTorch < 2.4, qui ne
+  sait pas n'autoriser que cette classe, il faut l'accord explicite `POPIXA_TRUST_CHECKPOINTS=1` :
+  jamais de repli silencieux sur un chargement complet.
+
 ## [2.2.0] — « Mètre-étalon »
 
 On mesure avant de changer : chaque version suivante devra prouver, chiffres à l'appui,

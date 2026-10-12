@@ -470,12 +470,14 @@ def _sync(device: str) -> None:
 
 def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
               seconds: float = 15.0, gen_tokens: int = 128, device: str = None, seed: int = 0,
-              dropout: float = 0.1) -> dict:
+              dropout: float = 0.1, dtype: str = "float32") -> dict:
     """
     Mesure le débit réel de la machine pour un preset (poids aléatoires, données aléatoires) :
       - entraînement : tokens/s (forward + backward + pas AdamW), batch × block_size tokens par pas,
-        avec le dropout de train.py (0.1) : sur CPU/MPS, le dropout d'attention fait passer
-        scaled_dot_product_attention sur l'implémentation lente → mesurer la vraie configuration
+        avec le dropout résiduel de train.py (0.1 ; l'attention n'en a pas depuis 2.3 : un dropout
+        dans scaled_dot_product_attention force l'implémentation lente sur CPU/MPS)
+      - dtype : float32, ou bfloat16 / float16 en autocast (comme train.py --dtype) → mesurer avant
+        d'adopter une précision réduite sur sa machine
       - génération   : tokens/s en décodage greedy avec KV-cache (le speculative decoding n'est pas
         mesuré : avec des poids aléatoires, ses drafts sont toujours rejetés, le chiffre ne voudrait rien dire)
       - mémoire (voir _peak_memory), TFLOPS effectifs ≈ (6·N + 12·L·T·d) × tokens/s  (N = paramètres)
@@ -491,6 +493,20 @@ def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
         model = nanoPOPIXA(cfg).to(device)
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
+    if dtype not in ("float32", "bfloat16", "float16"):
+        raise ValueError(f"dtype inconnu : {dtype}")
+    if dtype == "float16" and device != "cuda":
+        raise ValueError("float16 n'est géré que sur GPU CUDA — utilise bfloat16 ou float32")
+    autocast = contextlib.nullcontext()
+    if dtype != "float32":
+        try:
+            autocast = torch.autocast(device_type=device, dtype=getattr(torch, dtype))
+            with autocast:
+                probe = torch.ones(8, 8, device=device) @ torch.ones(8, 8, device=device)
+        except Exception as e:     # précision non gérée par cet appareil / cette version de PyTorch
+            raise ValueError(f"dtype {dtype} indisponible sur {device} : {str(e).splitlines()[0]}")
+        if probe.dtype != getattr(torch, dtype):        # autocast désactivé avec un simple avertissement
+            raise ValueError(f"dtype {dtype} indisponible sur {device} (autocast inactif)")
 
     T = cfg.block_size
     n_params = model.get_num_params(False)
@@ -504,11 +520,15 @@ def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
 
     def step():
         opt.zero_grad(set_to_none=True)
-        _, loss = model(x, y)
+        with autocast:
+            _, loss = model(x, y)
         loss.backward()
         opt.step()
 
-    step()                      # échauffement (allocations, kernels)
+    try:
+        step()                  # échauffement (allocations, kernels)
+    except RuntimeError as e:   # précision non gérée par cet appareil / cette version de PyTorch
+        raise ValueError(f"dtype {dtype} indisponible sur {device} : {str(e).splitlines()[0]}")
     _sync(device)
     steps, t0 = 0, time.perf_counter()
     while steps < 2 or (time.perf_counter() - t0 < seconds / 2 and steps < 200):
@@ -525,7 +545,8 @@ def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
     def gen_rate(fn):
         _sync(device)
         t = time.perf_counter()
-        n = len(list(fn()))
+        with autocast:
+            n = len(list(fn()))
         _sync(device)
         return n / (time.perf_counter() - t)
 
@@ -543,6 +564,7 @@ def run_bench(size: str = "nano", vocab_size: int = 50257, batch_size: int = 4,
         "batch_size":      batch_size,
         "block_size":      T,
         "dropout":         dropout,
+        "dtype":           dtype,
         "train_steps":     steps,
         "train_tok_s":     round(train_tps, 1),
         "train_tflops":    round(train_tps * flops_per_token / 1e12, 4),
